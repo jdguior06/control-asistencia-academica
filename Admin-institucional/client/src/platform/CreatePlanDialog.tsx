@@ -12,9 +12,9 @@ type CreatePlanDialogProps = {
 const maxInteger = 2_147_483_647
 
 const roleFields = [
-  { role: 'frontend', label: 'Frontend', Icon: Monitor, vcpu: 2, ramGib: 1, systemDiskGb: 32, awsType: 't3.micro', azureType: 'Standard_B2ts_v2' },
-  { role: 'backend', label: 'Backend', Icon: Server, vcpu: 2, ramGib: 4, systemDiskGb: 32, awsType: 't3.medium', azureType: 'Standard_B2ls_v2' },
-  { role: 'database', label: 'Base de datos', Icon: Database, vcpu: 2, ramGib: 4, systemDiskGb: 32, awsType: 't3.medium', azureType: 'Standard_B2ls_v2' },
+  { role: 'frontend', label: 'Frontend', Icon: Monitor, vcpu: 2, ramGib: 1, systemDiskGb: 20, awsType: 't3.micro', azureType: 'Standard_B2ts_v2' },
+  { role: 'backend', label: 'Backend', Icon: Server, vcpu: 2, ramGib: 2, systemDiskGb: 20, awsType: 't3.small', azureType: 'Standard_B2ls_v2' },
+  { role: 'database', label: 'Base de datos', Icon: Database, vcpu: 2, ramGib: 2, systemDiskGb: 20, awsType: 't3.small', azureType: 'Standard_B2ls_v2' },
 ] satisfies (PlanInstance & { label: string; Icon: typeof Monitor })[]
 
 function InstanceFields({ fields }: { fields: (typeof roleFields)[number] }) {

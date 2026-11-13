@@ -70,7 +70,7 @@ def main() -> None:
         "[all:vars]",
         f"ansible_user={usuario}",
         f"dominio={plataforma['dominio']}",
-        f"ip_privada_monitoreo={privadas['monitoreo']}",
+        f"grafana_ip={plataforma['ip_monitoreo']}",
         f"tenant_slug={tenant['slug']}",
         f"tenant_plan={tenant['plan']}",
         f"tenant_entorno={tenant['entorno']}",

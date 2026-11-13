@@ -1,8 +1,9 @@
-# gateway: Nginx en el servidor plataforma. Es la única puerta de entrada web:
+# gateway: Nginx en el servidor plataforma. Es la puerta de entrada web:
 #
-#   http://plataforma.<ip>.nip.io  (o http://<ip>)  ->  portal
-#   http://grafana.<ip>.nip.io                      ->  Grafana (servidor monitoreo)
-#   http://<slug>.<ip>.nip.io                       ->  frontend del tenant (por el peering)
+#   http://<ip>                 ->  portal
+#   http://<slug>.<ip>.nip.io   ->  frontend del tenant (por el peering)
+#
+# nip.io solo se usa para los tenants: así cada uno tiene su propio nombre.
 #
 # Con tenant_slug definido (tenant.yml) agrega o actualiza la ruta de ese tenant.
 # Cada tenant es un archivo en /etc/nginx/tenants/: esa carpeta es la lista de tenants.
@@ -25,7 +26,7 @@
     state: directory
     mode: "0755"
 
-- name: Portal, Grafana y lista de tenants
+- name: Portal y lista de tenants
   ansible.builtin.copy:
     dest: /etc/nginx/conf.d/plataforma.conf
     mode: "0644"
@@ -36,10 +37,10 @@
         ''      close;
       }
 
-      # Portal (también responde a la IP sola y a cualquier nombre desconocido).
+      # Portal: http://<ip> (y cualquier nombre que no sea de un tenant).
       server {
         listen 80 default_server;
-        server_name plataforma.{{ dominio }} {{ dominio }} _;
+        server_name _;
 
         root /var/www/portal;
         index index.html;
@@ -58,19 +59,6 @@
         }
       }
 
-      # Grafana (servidor monitoreo, red privada).
-      server {
-        listen 80;
-        server_name grafana.{{ dominio }};
-
-        location / {
-          proxy_pass http://{{ ip_privada_monitoreo }}:{{ grafana_puerto }};
-          proxy_http_version 1.1;
-          proxy_set_header Upgrade $http_upgrade;
-          proxy_set_header Connection $connection_upgrade;
-          proxy_set_header Host $host;
-        }
-      }
 
       # Un archivo por tenant.
       include /etc/nginx/tenants/*.conf;
@@ -137,6 +125,4 @@
 - name: Comprobar el portal a través del gateway
   ansible.builtin.uri:
     url: http://127.0.0.1/api/platform/health
-    headers:
-      Host: "plataforma.{{ dominio }}"
     status_code: 200

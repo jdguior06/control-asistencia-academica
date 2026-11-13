@@ -1,6 +1,6 @@
 # Firewalls (security groups) de la plataforma.
 #
-#   plataforma  80 y 443 desde internet (portal y gateway de los tenants), 22 para Ansible
+#   plataforma  80 y 443 desde internet (portal en http://<ip> y tenants en nip.io), 22 para Ansible
 #   monitoreo   3000 (Grafana) y 9090 (Prometheus) para ver los paneles, 22 para Ansible
 #
 # Las métricas de los tenants llegan por el peering: el firewall de cada TENANT
@@ -28,7 +28,7 @@ resource "aws_vpc_security_group_ingress_rule" "plataforma_web" {
   for_each = toset(["80", "443"])
 
   security_group_id = aws_security_group.plataforma.id
-  description       = "Portal y tenants (nip.io)"
+  description       = "Portal y tenants"
   ip_protocol       = "tcp"
   from_port         = tonumber(each.value)
   to_port           = tonumber(each.value)
@@ -64,15 +64,6 @@ resource "aws_vpc_security_group_ingress_rule" "monitoreo_paneles" {
   from_port         = tonumber(each.value)
   to_port           = tonumber(each.value)
   cidr_ipv4         = var.acceso_paneles
-}
-
-resource "aws_vpc_security_group_ingress_rule" "monitoreo_desde_gateway" {
-  security_group_id            = aws_security_group.monitoreo.id
-  description                  = "Grafana a traves del gateway (grafana.<ip>.nip.io)"
-  ip_protocol                  = "tcp"
-  from_port                    = 3000
-  to_port                      = 3000
-  referenced_security_group_id = aws_security_group.plataforma.id
 }
 
 resource "aws_vpc_security_group_ingress_rule" "monitoreo_ssh" {

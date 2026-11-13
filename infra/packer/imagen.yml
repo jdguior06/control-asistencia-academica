@@ -1,0 +1,116 @@
+# Lo que tienen en común los servidores de TODOS los tenants. Lo ejecuta Packer
+# (preparar.sh) en el servidor temporal, con las mismas tareas que tenant.yml.
+#
+# Aquí va solo lo que no depende del tenant: paquetes, código compilado y agentes.
+# Lo propio de cada tenant (.env, contraseñas, IPs, base de datos, configuración de
+# Nginx y del Collector) lo pone tenant.yml cuando se crea el tenant.
+
+- name: Imagen de los servidores de los tenants
+  hosts: all
+  become: true
+  vars_files:
+    - vars/vars.yml
+    - vars/monitoreo.yml
+  tasks:
+    - name: Comun
+      ansible.builtin.import_tasks: tareas/comun.yml
+    - name: Nodejs
+      ansible.builtin.import_tasks: tareas/nodejs.yml
+    - name: Codigo
+      ansible.builtin.import_tasks: tareas/codigo.yml
+
+    - name: Paquetes de los tres roles (se configuran después)
+      ansible.builtin.dnf:
+        name: [nginx, postgresql16-server]
+        state: present
+
+    # Igual que backend.yml: con las dependencias de desarrollo (migration:run usa ts-node).
+    - name: Compilar la API
+      become: true
+      become_user: "{{ app_usuario }}"
+      environment:
+        NODE_OPTIONS: --max-old-space-size=1536
+      block:
+        - name: Dependencias de la API (npm ci)
+          ansible.builtin.command:
+            cmd: npm ci --no-audit --no-fund
+            chdir: "{{ app_server_dir }}"
+            creates: "{{ app_server_dir }}/node_modules"
+
+        - name: Compilar la API (npm run build)
+          ansible.builtin.command:
+            cmd: npm run build
+            chdir: "{{ app_server_dir }}"
+            creates: "{{ app_server_dir }}/dist/main.js"
+
+    # El MISMO .env que frontend.yml: así tenant.yml ve que no cambió y no recompila.
+    - name: Variables de compilación del cliente (.env)
+      ansible.builtin.copy:
+        dest: "{{ app_cliente_dir }}/.env"
+        content: "VITE_API_URL=/api\n"
+        owner: "{{ app_usuario }}"
+        group: "{{ app_usuario }}"
+        mode: "0644"
+
+    - name: Compilar la web
+      become: true
+      become_user: "{{ app_usuario }}"
+      environment:
+        NODE_OPTIONS: --max-old-space-size=1536
+      block:
+        - name: Dependencias de la web (npm ci)
+          ansible.builtin.command:
+            cmd: npm ci --no-audit --no-fund
+            chdir: "{{ app_cliente_dir }}"
+            creates: "{{ app_cliente_dir }}/node_modules"
+
+        - name: Compilar la web (npm run build)
+          ansible.builtin.command:
+            cmd: npm run build
+            chdir: "{{ app_cliente_dir }}"
+            creates: "{{ app_cliente_dir }}/dist/index.html"
+
+    # Agentes de monitoreo: node_exporter y process-exporter quedan listos;
+    # el Collector y Netdata se configuran según el rol en tenant.yml.
+    - name: Node_exporter
+      ansible.builtin.import_tasks: tareas/node_exporter.yml
+    - name: Process_exporter
+      ansible.builtin.import_tasks: tareas/process_exporter.yml
+    - name: Netdata
+      ansible.builtin.import_tasks: tareas/netdata.yml
+
+    - name: Instalar el OpenTelemetry Collector (sin configurar)
+      ansible.builtin.dnf:
+        name: "{{ otelcol_url }}"
+        state: present
+        disable_gpg_check: true
+
+    - name: Aplicar los reinicios pendientes antes de limpiar
+      ansible.builtin.meta: flush_handlers
+
+    # ---------------------------------------------------------- limpieza
+    # tenant.yml crea el swap en cada servidor que lo necesite: no va en la imagen.
+    - name: Quitar el swap del servidor temporal del arranque
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        line: /swapfile none swap sw 0 0
+        state: absent
+
+    - name: Apagar el swap del servidor temporal
+      ansible.builtin.command: swapoff /swapfile
+      register: imagen_swapoff
+      changed_when: imagen_swapoff.rc == 0
+      failed_when: false
+
+    - name: Borrar el swap y el identificador de Netdata (cada servidor genera el suyo)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /swapfile
+        - /var/lib/netdata/registry/netdata.public.unique.id
+        - /etc/netdata/.machine-guid  # se regenera en cada servidor
+
+  handlers:
+    - name: Reinicios
+      ansible.builtin.import_tasks: tareas/handlers.yml

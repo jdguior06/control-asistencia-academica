@@ -11,3 +11,10 @@ tfplan
 crash.log
 
 # vault.yml SÍ se sube, pero solo cifrado (ansible-vault encrypt).
+
+# Pulumi: dependencias. Los Pulumi.<slug>.yaml SÍ se suben (entradas del tenant y sal de cifrado).
+tenant/pulumi/node_modules/
+tenant/pulumi/bin/
+
+# Archivos temporales de editores (vim)
+*.swp

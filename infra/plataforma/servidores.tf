@@ -79,7 +79,7 @@ resource "aws_instance" "servidor" {
   }
 }
 
-# IP fija del portal y del gateway: de ella salen todas las direcciones nip.io.
+# IP fija del portal (http://<ip>) y del gateway; de ella salen las direcciones nip.io de los tenants.
 resource "aws_eip" "plataforma" {
   domain     = "vpc"
   depends_on = [aws_internet_gateway.plataforma]

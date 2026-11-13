@@ -39,8 +39,10 @@ infra/
 ├── claves/                 claves SSH públicas (.pub) que entran a todos los servidores
 ├── plataforma/             Terraform: VPC, vm-plataforma, vm-monitoreo, roles IAM, IP fija
 ├── tenant/
-│   └── terraform/          un tenant (Terraform y OpenTofu)
-│                           (pulumi/ y cloudformation/ en la etapa 4, con las mismas entradas)
+│   ├── terraform/          un tenant con Terraform y OpenTofu
+│   ├── pulumi/             el mismo tenant con Pulumi (TypeScript)
+│   └── cloudformation/     el mismo tenant con CloudFormation (tenant.ps1 lo crea y lo borra)
+├── packer/                 imagen (AMI) de los tenants con todo preinstalado
 ├── scripts/inventario.py   JSON del tenant -> inventario de Ansible
 ├── ansible/
 │   ├── plataforma.yml      configura vm-plataforma y vm-monitoreo
@@ -63,6 +65,9 @@ Todos los motores reciben las **mismas entradas** y dejan la **misma salida**:
 | `slug`, `numero` (red 10.N), `region`, `plan`, `entorno` | `slug`, `region`, `plan`, `motor`, `cidr`, `url`, `servidores.{frontend,backend,base}.privada` |
 
 Así Ansible, el gateway y Prometheus no necesitan saber qué motor creó el tenant.
+Los cuatro crean exactamente lo mismo: la VPC, el peering (aceptado en la región de
+la plataforma), la ruta de vuelta, 3 firewalls con 21 reglas y 3 servidores con las
+mismas etiquetas.
 
 ---
 
@@ -85,8 +90,12 @@ El repo en WSL: `/mnt/d/Diplomado-2026/control-asistencia-academica/infra`.
    ```
    En us-east-2: VPC por defecto + plataforma + 3 tenants = 5. Repartir tenants en
    otras regiones también evita el límite.
-3. Revisa el límite de vCPU (Service Quotas → EC2 → *Running On-Demand Standard
-   instances*). Un tenant `basico` usa 6 vCPU (t3.micro + 2 × t3.medium) y la plataforma 4.
+3. La cuenta está en el **plan gratuito** de AWS: solo admite algunos tipos de servidor
+   (`t3.micro`, `t3.small`, `c7i-flex.large`, `m7i-flex.large`...). Los planes ya los usan;
+   si pides otro tipo, Terraform avisa antes de crear nada. Ver la lista:
+   ```powershell
+   aws ec2 describe-instance-types --region us-east-2 --filters Name=free-tier-eligible,Values=true --query "InstanceTypes[].InstanceType" --output table
+   ```
 
 ## 1. Secretos de la plataforma (una vez, WSL)
 
@@ -117,7 +126,35 @@ ansible all -i inventarios/plataforma.ini -m ping
 ansible-playbook -i inventarios/plataforma.ini plataforma.yml
 ```
 
-Al final muestra el portal (`http://plataforma.<ip>.nip.io`) y Grafana (`http://grafana.<ip>.nip.io`).
+Al final muestra el portal (`http://<ip>`) y Grafana (`http://<ip de vm-monitoreo>:3000`).
+nip.io solo se usa para los tenants.
+
+## 3b. Imagen de los tenants con Packer (recomendado, PowerShell)
+
+Packer crea un servidor temporal, le ejecuta `packer/imagen.yml` (las **mismas tareas**
+de `ansible/tareas/`) y guarda su disco como imagen: Node, Nginx, PostgreSQL, la app ya
+compilada y los agentes de monitoreo. Los 4 motores usan sola la imagen más reciente
+`asistencia-tenant-*` de la región; si no hay, usan Amazon Linux y Ansible instala todo.
+
+```powershell
+winget install Hashicorp.Packer      # una vez
+cd D:\Diplomado-2026\control-asistencia-academica\infra\packer
+packer init .
+packer validate .
+packer build .                       # 15-20 minutos; la copia a us-east-1 y us-west-2
+```
+
+| | Sin imagen | Con imagen |
+| --- | --- | --- |
+| `tenant.yml` la primera vez | 10-15 min (instala y compila) | 2-3 min (solo configura) |
+
+- Vuelve a crearla cuando cambie el código de la app: un tenant nuevo que use una imagen
+  vieja funciona igual, pero Ansible recompila (tarda como sin imagen).
+- Una imagen nueva **no** recrea los tenants que ya existen.
+- Cada imagen cuesta poco (unos centavos al mes por región). Para borrar las viejas:
+  EC2 → AMIs → *Deregister* y luego borrar su snapshot.
+- `cloud-init` y Ansible siguen haciendo su parte: la imagen es lo común, cloud-init pone
+  las claves SSH de cada servidor y Ansible lo propio de cada tenant.
 
 ## 4. Crear un tenant con Terraform (PowerShell)
 
@@ -131,10 +168,50 @@ terraform apply -var slug=utepsa -var numero=1 -var region=us-east-2 -var plan=b
 - Cada tenant tiene su propio estado (`tenants/<slug>/`): para otro tenant, repite el
   `init -reconfigure` con su `key`.
 - Con OpenTofu es igual, cambiando `terraform` por `tofu` y agregando `-var motor=opentofu`.
-- Para pruebas más baratas, servidores más chicos:
-  `-var 'servidores={frontend={tipo="t3.micro",disco=16},backend={tipo="t3.small",disco=16},base={tipo="t3.small",disco=16}}'`
+- Tamaños por plan (todos con 2 vCPU):
+
+  | Plan | Frontend | Backend | Base | Disco |
+  | --- | --- | --- | --- | --- |
+  | basico | t3.micro (1 GB) | t3.small (2 GB) | t3.small (2 GB) | 20 GB |
+  | estandar | t3.small (2 GB) | c7i-flex.large (4 GB) | c7i-flex.large (4 GB) | 30 GB |
+  | avanzado | t3.small (2 GB) | m7i-flex.large (8 GB) | m7i-flex.large (8 GB) | 40 GB |
+
+  Otro tamaño: `-var 'servidores={frontend={tipo="t3.micro",disco=20},backend={tipo="t3.small",disco=20},base={tipo="t3.small",disco=20}}'`
+
+### 4b. El mismo tenant con Pulumi (PowerShell)
+
+Una vez por PC: `npm install` en `infra\tenant\pulumi`. Usa la misma frase de cifrado de
+la práctica de Pulumi. Cada tenant es un stack, y **el nombre del stack es el slug**.
+
+```powershell
+cd D:\Diplomado-2026\control-asistencia-academica\infra\tenant\pulumi
+$env:PULUMI_CONFIG_PASSPHRASE = "la-frase-del-grupo"
+pulumi stack init la-salle
+pulumi up -c numero=2 -c region=us-east-2 -c plan=basico
+```
+
+Escribe `generado\tenants\la-salle.json` (lo mismo que Terraform) y `Pulumi.la-salle.yaml`
+(las entradas del tenant: súbelo a git). Borrar:
+`pulumi stack select la-salle`, `pulumi destroy`, `pulumi stack rm la-salle` y
+borrar ese JSON.
+
+### 4c. El mismo tenant con CloudFormation (PowerShell)
+
+```powershell
+cd D:\Diplomado-2026\control-asistencia-academica
+.\infra\tenant\cloudformation\tenant.ps1 -Accion crear -Slug uagrm -Numero 3 -Region us-west-2 -Plan basico
+```
+
+Crea dos stacks: `tenant-uagrm` en la región del tenant (red, peering y servidores) y
+`tenant-uagrm-ruta` en la región de la plataforma (la ruta de vuelta: un stack no puede
+crear recursos en otra región). Escribe `generado\tenants\uagrm.json`. Borrar:
+`tenant.ps1 -Accion borrar -Slug uagrm -Region us-west-2`.
+
+Si PowerShell no deja ejecutarlo: `Unblock-File .\infra\tenant\cloudformation\tenant.ps1`.
 
 ## 5. Configurar el tenant (WSL, 10-15 minutos)
+
+Igual para los cuatro motores (cambia solo el slug).
 
 ```bash
 cd /mnt/d/Diplomado-2026/control-asistencia-academica/infra
@@ -169,6 +246,16 @@ Después de borrar un tenant, quita su ruta del gateway (WSL):
 `ansible vm-plataforma -i inventarios/plataforma.ini -b -m file -a "path=/etc/nginx/tenants/utepsa.conf state=absent"`
 y vuelve a ejecutar `plataforma.yml` (en la etapa 6 lo hará el portal).
 
+## Demo sugerida: 3 universidades, 3 motores, 2 regiones
+
+| Tenant | Motor | Región | numero |
+| --- | --- | --- | --- |
+| utepsa | Terraform | us-east-2 | 1 |
+| la-salle | Pulumi | us-east-2 | 2 |
+| uagrm | CloudFormation | us-west-2 | 3 |
+
+En us-east-2 quedan 4 VPC (por defecto, plataforma y 2 tenants): no hace falta pedir más cuota.
+
 ## Demostraciones
 
 | Qué | Cómo | Qué se ve |
@@ -182,8 +269,6 @@ y vuelve a ejecutar `plataforma.yml` (en la etapa 6 lo hará el portal).
 
 ## Pendiente (siguientes etapas)
 
-- **Etapa 3:** Packer (imágenes con todo instalado: el tenant tarda minutos).
-- **Etapa 4:** el mismo tenant con Pulumi y CloudFormation.
 - **Etapa 5:** el portal crea tenants (worker). El portal solo vincula tenants con
   **HTTPS** (`invitations.js`): hay que decidir entre certificados de Let's Encrypt
   en el gateway o permitir HTTP para la demo con una variable.

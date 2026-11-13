@@ -66,12 +66,18 @@ variable "motor" {
 }
 
 variable "servidores" {
-  description = "Opcional: otro tamaño de servidores en vez del del plan. Ej. { frontend = { tipo = \"t3.micro\", disco = 16 }, ... }"
+  description = "Opcional: otro tamaño de servidores en vez del del plan. Ej. { frontend = { tipo = \"t3.micro\", disco = 20 }, ... }"
   type = map(object({
     tipo  = string
     disco = number
   }))
   default = null
+}
+
+variable "usar_imagen" {
+  description = "Usar la imagen propia de Packer (asistencia-tenant-*) si existe en la región."
+  type        = bool
+  default     = true
 }
 
 variable "archivo_plataforma" {

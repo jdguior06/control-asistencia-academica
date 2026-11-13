@@ -46,7 +46,7 @@ resource "local_file" "inventario_ansible" {
     [all:vars]
     ansible_user=ec2-user
     dominio=${local.dominio}
-    ip_privada_monitoreo=${aws_instance.servidor["monitoreo"].private_ip}
+    grafana_ip=${aws_instance.servidor["monitoreo"].public_ip}
     regiones_terraform=${join(",", var.regiones_tenant)}
   EOT
 
@@ -55,19 +55,16 @@ resource "local_file" "inventario_ansible" {
 
 output "portal" {
   description = "Dirección del portal."
-  value       = "http://plataforma.${local.dominio}"
+  value       = "http://${aws_eip.plataforma.public_ip}"
 }
 
 output "grafana" {
-  description = "Grafana (a través del gateway y directo)."
-  value = {
-    gateway = "http://grafana.${local.dominio}"
-    directo = "http://${aws_instance.servidor["monitoreo"].public_ip}:3000"
-  }
+  description = "Grafana (usuario admin)."
+  value       = "http://${aws_instance.servidor["monitoreo"].public_ip}:3000"
 }
 
 output "dominio" {
-  description = "Cada tenant queda en http://<slug>.<dominio>."
+  description = "Solo para los tenants: cada uno queda en http://<slug>.<dominio>."
   value       = local.dominio
 }
 

@@ -142,4 +142,4 @@
             {{ 'Primer administrador: lo invita el portal (clave de vinculación en ' ~ tenant_secretos ~ '/clave_vinculacion)'
             if tenant_invitacion else
             'Usuario ' ~ admin_email ~ ', contraseña en infra/generado/tenants/' ~ tenant_slug ~ '/admin_password' }}
-          - "Grafana: http://grafana.{{ dominio }} -> Tenant - Detalle -> {{ tenant_slug }}"
+          - "Grafana: http://{{ grafana_ip }}:{{ grafana_puerto }} -> Tenant - Detalle -> {{ tenant_slug }}"

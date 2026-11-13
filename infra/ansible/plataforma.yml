@@ -89,7 +89,7 @@
     - name: Direcciones
       ansible.builtin.debug:
         msg:
-          - "Portal:     http://plataforma.{{ dominio }}  ({{ portal_admin_email }}, contraseña vault_portal_admin_password)"
-          - "Grafana:    http://grafana.{{ dominio }}  (admin, contraseña vault_grafana_password)"
+          - "Portal:     http://{{ ansible_host }}  ({{ portal_admin_email }}, contraseña vault_portal_admin_password)"
+          - "Grafana:    http://{{ hostvars[groups['monitoreo'][0]]['ansible_host'] }}:{{ grafana_puerto }}  (admin, contraseña vault_grafana_password)"
           - "Prometheus: http://{{ hostvars[groups['monitoreo'][0]]['ansible_host'] }}:{{ prometheus_puerto }}/targets"
           - "Tenants:    http://<slug>.{{ dominio }}"

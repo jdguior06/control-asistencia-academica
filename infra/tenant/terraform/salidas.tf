@@ -15,6 +15,7 @@ locals {
     url     = "http://${local.dominio}"
     vpc_id  = aws_vpc.tenant.id
     peering = aws_vpc_peering_connection.plataforma.id
+    imagen  = local.imagen
     servidores = {
       for rol, s in aws_instance.servidor : rol => {
         id      = s.id

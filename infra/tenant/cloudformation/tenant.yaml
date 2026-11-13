@@ -1,0 +1,334 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Un tenant completo (lo mismo que ../terraform y ../pulumi): red propia 10.N.0.0/16,
+  peering con la plataforma y 3 servidores vacíos (los configura Ansible).
+  Se despliega en la región del tenant; la ruta de vuelta va en ruta-plataforma.yaml.
+
+# Stack: tenant-<slug>. Lo crea tenant.ps1 (o el portal): no hace falta usar la consola.
+
+Parameters:
+  Slug:
+    Type: String
+    Description: Identificador del tenant (va en la URL <slug>.<ip>.nip.io)
+    AllowedPattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+    MinLength: 3
+    MaxLength: 30
+    ConstraintDescription: 3 a 30 caracteres, minúsculas, números y guiones (ej. utepsa).
+  Numero:
+    Type: Number
+    Description: Red del tenant 10.<Numero>.0.0/16 (distinto en cada tenant)
+    MinValue: 1
+    MaxValue: 250
+  Plan:
+    Type: String
+    Default: basico
+    AllowedValues: [basico, estandar, avanzado]
+
+  # Datos de la plataforma (de generado/plataforma.json; los pasa tenant.ps1).
+  PlataformaVpc:
+    Type: String
+    Description: VPC de la plataforma
+  PlataformaCidr:
+    Type: String
+    Default: 10.0.0.0/16
+  PlataformaRegion:
+    Type: String
+    Default: us-east-2
+  ClavesSsh:
+    Type: CommaDelimitedList
+    Description: Claves SSH públicas (separadas por comas)
+
+  # Opcional: otro tamaño en vez del del plan. Vacío = el del plan.
+  # Solo tipos del plan gratuito de AWS.
+  TipoFrontend:
+    Type: String
+    Default: ""
+    AllowedValues: ["", t3.micro, t3.small, t8i.micro, t8i.small, c7i-flex.large, m7i-flex.large]
+  TipoBackend:
+    Type: String
+    Default: ""
+    AllowedValues: ["", t3.micro, t3.small, t8i.micro, t8i.small, c7i-flex.large, m7i-flex.large]
+  TipoBase:
+    Type: String
+    Default: ""
+    AllowedValues: ["", t3.micro, t3.small, t8i.micro, t8i.small, c7i-flex.large, m7i-flex.large]
+  Disco:
+    Type: Number
+    Default: 0
+    Description: Disco de cada servidor en GB (0 = el del plan)
+    MinValue: 0
+    MaxValue: 200
+
+  # Imagen propia de Packer (asistencia-tenant-*). tenant.ps1 busca la más reciente
+  # de la región; vacío = Amazon Linux 2023 (Ansible instala todo, más lento).
+  ImagenPropia:
+    Type: String
+    Default: ""
+    AllowedPattern: "^(ami-[0-9a-f]+)?$"
+
+  # Amazon Linux 2023 más reciente de la región (parámetro público de AWS).
+  Imagen:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+# Tamaños por plan: la misma tabla que Terraform (locales.tf) y el portal (005_planes_free_tier.sql).
+Mappings:
+  Planes:
+    basico:
+      Frontend: t3.micro
+      Backend: t3.small
+      Base: t3.small
+      Disco: 20
+    estandar:
+      Frontend: t3.small
+      Backend: c7i-flex.large
+      Base: c7i-flex.large
+      Disco: 30
+    avanzado:
+      Frontend: t3.small
+      Backend: m7i-flex.large
+      Base: m7i-flex.large
+      Disco: 40
+
+Conditions:
+  OtroFrontend: !Not [!Equals [!Ref TipoFrontend, ""]]
+  OtroBackend: !Not [!Equals [!Ref TipoBackend, ""]]
+  OtroBase: !Not [!Equals [!Ref TipoBase, ""]]
+  OtroDisco: !Not [!Equals [!Ref Disco, "0"]]
+  HayImagenPropia: !Not [!Equals [!Ref ImagenPropia, ""]]
+
+Resources:
+  # ------------------------------------------------------------- red
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Sub "10.${Numero}.0.0/16"
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - { Key: Name, Value: !Sub "tenant-${Slug}-vpc" }
+
+  # Salida a internet (paquetes, git clone). Nadie entra desde internet: ver los firewalls.
+  Igw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - { Key: Name, Value: !Sub "tenant-${Slug}-igw" }
+
+  IgwVpc:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref Igw
+
+  Subred:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Sub "10.${Numero}.1.0/24"
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - { Key: Name, Value: !Sub "tenant-${Slug}-subred" }
+
+  # Peering con la plataforma. Misma cuenta: AWS lo acepta solo, aunque la
+  # plataforma esté en otra región (PeerRegion).
+  Peering:
+    Type: AWS::EC2::VPCPeeringConnection
+    Properties:
+      VpcId: !Ref Vpc
+      PeerVpcId: !Ref PlataformaVpc
+      PeerRegion: !Ref PlataformaRegion
+      Tags:
+        - { Key: Name, Value: !Sub "tenant-${Slug}-a-plataforma" }
+
+  TablaRutas:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - { Key: Name, Value: !Sub "tenant-${Slug}-rt" }
+
+  RutaInternet:
+    Type: AWS::EC2::Route
+    DependsOn: IgwVpc
+    Properties:
+      RouteTableId: !Ref TablaRutas
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref Igw
+
+  RutaPlataforma:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref TablaRutas
+      DestinationCidrBlock: !Ref PlataformaCidr
+      VpcPeeringConnectionId: !Ref Peering
+
+  SubredRutas:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subred
+      RouteTableId: !Ref TablaRutas
+
+  # ------------------------------------------------------------- firewalls
+  # SSH (Ansible) y agentes de monitoreo (9100 node, 9256 procesos, 8889 Collector,
+  # 19999 Netdata) solo desde la plataforma.
+  SgFrontend:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "tenant-${Slug}-sg-frontend"
+      GroupDescription: !Sub "Tenant ${Slug}: frontend"
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: !Ref PlataformaCidr, Description: Web desde el gateway de la plataforma }
+        - { IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: !Ref PlataformaCidr, Description: SSH desde la plataforma (Ansible) }
+        - { IpProtocol: tcp, FromPort: 9100, ToPort: 9100, CidrIp: !Ref PlataformaCidr, Description: Monitoreo desde la plataforma }
+        - { IpProtocol: tcp, FromPort: 9256, ToPort: 9256, CidrIp: !Ref PlataformaCidr, Description: Monitoreo desde la plataforma }
+        - { IpProtocol: tcp, FromPort: 8889, ToPort: 8889, CidrIp: !Ref PlataformaCidr, Description: Monitoreo desde la plataforma }
+        - { IpProtocol: tcp, FromPort: 19999, ToPort: 19999, CidrIp: !Ref PlataformaCidr, Description: Monitoreo desde la plataforma }
+      Tags:
+        - { Key: Name, Value: !Sub "tenant-${Slug}-sg-frontend" }
+
+  SgBackend:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "tenant-${Slug}-sg-backend"
+      GroupDescription: !Sub "Tenant ${Slug}: backend"
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 3000, ToPort: 3000, SourceSecurityGroupId: !Ref SgFrontend, Description: API solo desde el frontend }
+        - { IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: !Ref PlataformaCidr, Description: SSH desde la plataforma (Ansible) }
+        - { IpProtocol: tcp, FromPort: 9100, ToPort: 9100, CidrIp: !Ref PlataformaCidr, Description: Monitoreo desde la plataforma }
+        - { IpProtocol: tcp, FromPort: 9256, ToPort: 9256, CidrIp: !Ref PlataformaCidr, Description: Monitoreo desde la plataforma }
+        - { IpProtocol: tcp, FromPort: 8889, ToPort: 8889, CidrIp: !Ref PlataformaCidr, Description: Monitoreo desde la plataforma }
+        - { IpProtocol: tcp, FromPort: 19999, ToPort: 19999, CidrIp: !Ref PlataformaCidr, Description: Monitoreo desde la plataforma }
+      Tags:
+        - { Key: Name, Value: !Sub "tenant-${Slug}-sg-backend" }
+
+  SgBase:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "tenant-${Slug}-sg-base"
+      GroupDescription: !Sub "Tenant ${Slug}: base"
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 5432, ToPort: 5432, SourceSecurityGroupId: !Ref SgBackend, Description: PostgreSQL solo desde el backend }
+        - { IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: !Ref PlataformaCidr, Description: SSH desde la plataforma (Ansible) }
+        - { IpProtocol: tcp, FromPort: 9100, ToPort: 9100, CidrIp: !Ref PlataformaCidr, Description: Monitoreo desde la plataforma }
+        - { IpProtocol: tcp, FromPort: 9256, ToPort: 9256, CidrIp: !Ref PlataformaCidr, Description: Monitoreo desde la plataforma }
+        - { IpProtocol: tcp, FromPort: 8889, ToPort: 8889, CidrIp: !Ref PlataformaCidr, Description: Monitoreo desde la plataforma }
+        - { IpProtocol: tcp, FromPort: 19999, ToPort: 19999, CidrIp: !Ref PlataformaCidr, Description: Monitoreo desde la plataforma }
+      Tags:
+        - { Key: Name, Value: !Sub "tenant-${Slug}-sg-base" }
+
+  # ------------------------------------------------------------- servidores
+  # cloud-init mínimo: solo las claves SSH. Todo lo demás lo hace Ansible.
+  # Las etiquetas Proyecto, Tenant, Plan, Entorno... las pone tenant.ps1 en el stack y
+  # CloudFormation las copia a cada recurso (Prometheus las lee).
+  Frontend:
+    Type: AWS::EC2::Instance
+    DependsOn: RutaInternet # sin salida a internet, cloud-init no termina bien
+    Properties:
+      ImageId: !If [HayImagenPropia, !Ref ImagenPropia, !Ref Imagen]
+      InstanceType: !If [OtroFrontend, !Ref TipoFrontend, !FindInMap [Planes, !Ref Plan, Frontend]]
+      SubnetId: !Ref Subred
+      PrivateIpAddress: !Sub "10.${Numero}.1.20"
+      SecurityGroupIds: [!Ref SgFrontend]
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !If [OtroDisco, !Ref Disco, !FindInMap [Planes, !Ref Plan, Disco]]
+            VolumeType: gp3
+            Encrypted: true
+      MetadataOptions:
+        HttpTokens: required # IMDSv2
+      UserData:
+        Fn::Base64: !Sub
+          - "#cloud-config\nssh_authorized_keys:\n  - ${Claves}\n"
+          - Claves: !Join ["\n  - ", !Ref ClavesSsh]
+      Tags:
+        - { Key: Name, Value: !Sub "${Slug}-frontend" }
+        - { Key: Rol, Value: frontend }
+
+  Backend:
+    Type: AWS::EC2::Instance
+    DependsOn: RutaInternet
+    Properties:
+      ImageId: !If [HayImagenPropia, !Ref ImagenPropia, !Ref Imagen]
+      InstanceType: !If [OtroBackend, !Ref TipoBackend, !FindInMap [Planes, !Ref Plan, Backend]]
+      SubnetId: !Ref Subred
+      PrivateIpAddress: !Sub "10.${Numero}.1.10"
+      SecurityGroupIds: [!Ref SgBackend]
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !If [OtroDisco, !Ref Disco, !FindInMap [Planes, !Ref Plan, Disco]]
+            VolumeType: gp3
+            Encrypted: true
+      MetadataOptions:
+        HttpTokens: required
+      UserData:
+        Fn::Base64: !Sub
+          - "#cloud-config\nssh_authorized_keys:\n  - ${Claves}\n"
+          - Claves: !Join ["\n  - ", !Ref ClavesSsh]
+      Tags:
+        - { Key: Name, Value: !Sub "${Slug}-backend" }
+        - { Key: Rol, Value: backend }
+
+  Base:
+    Type: AWS::EC2::Instance
+    DependsOn: RutaInternet
+    Properties:
+      ImageId: !If [HayImagenPropia, !Ref ImagenPropia, !Ref Imagen]
+      InstanceType: !If [OtroBase, !Ref TipoBase, !FindInMap [Planes, !Ref Plan, Base]]
+      SubnetId: !Ref Subred
+      PrivateIpAddress: !Sub "10.${Numero}.1.30"
+      SecurityGroupIds: [!Ref SgBase]
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !If [OtroDisco, !Ref Disco, !FindInMap [Planes, !Ref Plan, Disco]]
+            VolumeType: gp3
+            Encrypted: true
+      MetadataOptions:
+        HttpTokens: required
+      UserData:
+        Fn::Base64: !Sub
+          - "#cloud-config\nssh_authorized_keys:\n  - ${Claves}\n"
+          - Claves: !Join ["\n  - ", !Ref ClavesSsh]
+      Tags:
+        - { Key: Name, Value: !Sub "${Slug}-base" }
+        - { Key: Rol, Value: base }
+
+# tenant.ps1 lee estas salidas y escribe generado/tenants/<slug>.json (mismo formato que Terraform).
+Outputs:
+  Imagen:
+    Value: !If [HayImagenPropia, !Ref ImagenPropia, !Ref Imagen]
+  VpcId:
+    Value: !Ref Vpc
+  Peering:
+    Value: !Ref Peering
+  FrontendId:
+    Value: !Ref Frontend
+  FrontendTipo:
+    Value: !If [OtroFrontend, !Ref TipoFrontend, !FindInMap [Planes, !Ref Plan, Frontend]]
+  FrontendPrivada:
+    Value: !GetAtt Frontend.PrivateIp
+  FrontendPublica:
+    Value: !GetAtt Frontend.PublicIp
+  BackendId:
+    Value: !Ref Backend
+  BackendTipo:
+    Value: !If [OtroBackend, !Ref TipoBackend, !FindInMap [Planes, !Ref Plan, Backend]]
+  BackendPrivada:
+    Value: !GetAtt Backend.PrivateIp
+  BackendPublica:
+    Value: !GetAtt Backend.PublicIp
+  BaseId:
+    Value: !Ref Base
+  BaseTipo:
+    Value: !If [OtroBase, !Ref TipoBase, !FindInMap [Planes, !Ref Plan, Base]]
+  BasePrivada:
+    Value: !GetAtt Base.PrivateIp
+  BasePublica:
+    Value: !GetAtt Base.PublicIp

@@ -1,0 +1,26 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Ruta de vuelta de un tenant: en la tabla de rutas de la PLATAFORMA, la red
+  10.N.0.0/16 del tenant va por su peering. Se despliega en la región de la
+  plataforma (un stack de CloudFormation no puede crear recursos en otra región).
+
+# Stack: tenant-<slug>-ruta. Lo crea tenant.ps1 después del stack tenant-<slug>.
+
+Parameters:
+  TablaRutas:
+    Type: String
+    Description: Tabla de rutas de la plataforma (generado/plataforma.json -> tabla_rutas)
+  CidrTenant:
+    Type: String
+    Description: Red del tenant (10.N.0.0/16)
+  Peering:
+    Type: String
+    Description: Peering del tenant (salida Peering del stack tenant-<slug>)
+
+Resources:
+  RutaATenant:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref TablaRutas
+      DestinationCidrBlock: !Ref CidrTenant
+      VpcPeeringConnectionId: !Ref Peering

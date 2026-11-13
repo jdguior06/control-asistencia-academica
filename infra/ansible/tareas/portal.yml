@@ -10,7 +10,7 @@
     mode: "0600"
     content: |
       # Administrado por Ansible (infra/ansible). No editar a mano.
-      # Solo local: el gateway Nginx lo publica en http://plataforma.{{ dominio }}
+      # Solo local: el gateway Nginx lo publica en http://<ip de la plataforma>
       HOST=127.0.0.1
       PORT={{ portal_puerto }}
       PLATFORM_DATABASE_URL=postgresql://{{ portal_db_usuario }}:{{ portal_db_password }}@127.0.0.1:{{ db_puerto }}/{{ portal_db_nombre }}

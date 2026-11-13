@@ -30,7 +30,7 @@
       # Administrado por Ansible (infra/ansible). No editar a mano.
       [Service]
       Environment=GF_SERVER_HTTP_PORT={{ grafana_puerto }}
-      Environment=GF_SERVER_ROOT_URL=http://grafana.{{ dominio }}/
+      Environment=GF_SERVER_ROOT_URL=http://{{ ansible_host }}:{{ grafana_puerto }}/
       Environment=GF_SECURITY_ADMIN_USER=admin
       # Solo se usa la primera vez (cuando Grafana crea su base de datos).
       Environment=GF_SECURITY_ADMIN_PASSWORD={{ grafana_admin_password }}

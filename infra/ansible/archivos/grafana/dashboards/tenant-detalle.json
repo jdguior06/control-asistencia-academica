@@ -1487,7 +1487,7 @@
     {
       "id": 29,
       "type": "row",
-      "title": "Netdata (detalle en tiempo real: http://<ip-del-servidor>:19999)",
+      "title": "Netdata (en vivo: túnel SSH por vm-plataforma, ver LEEME)",
       "collapsed": false,
       "gridPos": {
         "x": 0,

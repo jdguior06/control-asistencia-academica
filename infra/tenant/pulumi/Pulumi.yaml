@@ -1,0 +1,28 @@
+# Un tenant con Pulumi (TypeScript): lo mismo que ../terraform, con las mismas
+# entradas y la misma salida (../../generado/tenants/<slug>.json).
+# Un stack por tenant: el nombre del stack es el slug (utepsa, la-salle...).
+name: asistencia-tenant
+description: Un tenant completo (red, peering con la plataforma y 3 servidores)
+runtime:
+  name: nodejs
+  options:
+    packagemanager: npm
+
+# Estado en el mismo bucket que Terraform, en la carpeta pulumi/ (sin "pulumi login").
+backend:
+  url: s3://tfstate-asistencia-859142233691/pulumi?region=us-east-2
+
+# Entradas del tenant (iguales a las de Terraform). Se dan con "pulumi up -c clave=valor".
+config:
+  numero:
+    type: integer
+    description: Red del tenant 10.<numero>.0.0/16 (distinto en cada tenant)
+  region:
+    type: string
+    default: us-east-2
+  plan:
+    type: string
+    default: basico
+  entorno:
+    type: string
+    default: production
