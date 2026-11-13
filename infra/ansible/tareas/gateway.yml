@@ -1,0 +1,142 @@
+# gateway: Nginx en el servidor plataforma. Es la única puerta de entrada web:
+#
+#   http://plataforma.<ip>.nip.io  (o http://<ip>)  ->  portal
+#   http://grafana.<ip>.nip.io                      ->  Grafana (servidor monitoreo)
+#   http://<slug>.<ip>.nip.io                       ->  frontend del tenant (por el peering)
+#
+# Con tenant_slug definido (tenant.yml) agrega o actualiza la ruta de ese tenant.
+# Cada tenant es un archivo en /etc/nginx/tenants/: esa carpeta es la lista de tenants.
+
+- name: Instalar Nginx
+  ansible.builtin.dnf:
+    name: nginx
+    state: present
+
+- name: Quitar default_server del sitio de ejemplo de Amazon Linux
+  ansible.builtin.replace:
+    path: /etc/nginx/nginx.conf
+    regexp: '\s+default_server'
+    replace: ''
+  notify: Recargar Nginx
+
+- name: Carpeta de las rutas de los tenants
+  ansible.builtin.file:
+    path: /etc/nginx/tenants
+    state: directory
+    mode: "0755"
+
+- name: Portal, Grafana y lista de tenants
+  ansible.builtin.copy:
+    dest: /etc/nginx/conf.d/plataforma.conf
+    mode: "0644"
+    content: |
+      # Administrado por Ansible (infra/ansible). No editar a mano.
+      map $http_upgrade $connection_upgrade {
+        default upgrade;
+        ''      close;
+      }
+
+      # Portal (también responde a la IP sola y a cualquier nombre desconocido).
+      server {
+        listen 80 default_server;
+        server_name plataforma.{{ dominio }} {{ dominio }} _;
+
+        root /var/www/portal;
+        index index.html;
+
+        location / {
+          try_files $uri $uri/ /index.html;
+        }
+
+        location /api/ {
+          proxy_pass http://127.0.0.1:{{ portal_puerto }};
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          # Crear un tenant tarda: no cortar las peticiones largas del worker.
+          proxy_read_timeout 300s;
+        }
+      }
+
+      # Grafana (servidor monitoreo, red privada).
+      server {
+        listen 80;
+        server_name grafana.{{ dominio }};
+
+        location / {
+          proxy_pass http://{{ ip_privada_monitoreo }}:{{ grafana_puerto }};
+          proxy_http_version 1.1;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection $connection_upgrade;
+          proxy_set_header Host $host;
+        }
+      }
+
+      # Un archivo por tenant.
+      include /etc/nginx/tenants/*.conf;
+  notify: Recargar Nginx
+
+- name: Ruta del tenant {{ tenant_slug | default('') }}
+  when: tenant_slug is defined
+  ansible.builtin.copy:
+    dest: "/etc/nginx/tenants/{{ tenant_slug }}.conf"
+    mode: "0644"
+    content: |
+      # Administrado por Ansible (infra/ansible). No editar a mano.
+      # Tenant {{ tenant_slug }} · plan {{ tenant_plan }} · {{ tenant_region }} · {{ tenant_motor }}
+      server {
+        listen 80;
+        server_name {{ tenant_slug }}.{{ dominio }};
+        client_max_body_size 20m;
+
+        location / {
+          proxy_pass http://{{ ip_frontend }};
+          proxy_http_version 1.1;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection $connection_upgrade;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_read_timeout 300s;
+        }
+      }
+  notify: Recargar Nginx
+
+# El portal solo vincula URLs de esta lista (PLATFORM_TENANT_ORIGINS).
+- name: Tenants que existen (archivos en /etc/nginx/tenants)
+  ansible.builtin.find:
+    paths: /etc/nginx/tenants
+    patterns: "*.conf"
+  register: gateway_tenants
+
+- name: Lista de tenants para el portal
+  ansible.builtin.copy:
+    dest: /etc/asistencia-portal/origenes.env
+    mode: "0644"
+    content: |
+      # Administrado por Ansible (infra/ansible). No editar a mano.
+      PLATFORM_TENANT_ORIGINS={{ gateway_slugs | map('regex_replace', '^(.+)$', 'http://\1.' ~ dominio) | join(',') }}
+  vars:
+    # utepsa.conf -> utepsa
+    gateway_slugs: "{{ gateway_tenants.files | map(attribute='path') | map('basename') | map('splitext') | map('first') | sort }}"
+  notify: Reiniciar portal
+
+- name: Probar la configuración de Nginx
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Nginx activo al arrancar
+  ansible.builtin.systemd:
+    name: nginx
+    state: started
+    enabled: true
+
+- name: Aplicar ahora los cambios
+  ansible.builtin.meta: flush_handlers
+
+- name: Comprobar el portal a través del gateway
+  ansible.builtin.uri:
+    url: http://127.0.0.1/api/platform/health
+    headers:
+      Host: "plataforma.{{ dominio }}"
+    status_code: 200

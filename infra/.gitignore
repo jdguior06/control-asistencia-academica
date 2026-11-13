@@ -1,0 +1,13 @@
+# Lo escriben Terraform y los scripts en cada PC (IPs y secretos de cada tenant): no va a git.
+generado/
+ansible/inventarios/*.ini
+
+# Terraform / OpenTofu
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+
+# vault.yml SÍ se sube, pero solo cifrado (ansible-vault encrypt).

@@ -1,0 +1,270 @@
+# Reglas de alerta de Grafana (provisioning). Archivo estático: Ansible lo copia tal cual.
+# Cada regla: A = consulta a Prometheus, B = último valor, C = umbral. Si C se cumple
+# durante "for", la alerta pasa a "Firing" (Alerting → Alert rules en Grafana).
+# Las etiquetas tenant y servidor viajan con la alerta: el mensaje dice a quién afecta.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: asistencia
+    folder: Asistencia
+    interval: 30s
+    rules:
+      - uid: agente-caido
+        title: "Servidor o agente sin respuesta"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: 'up'
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+        for: 1m
+        noDataState: Alerting
+        execErrState: Error
+        labels:
+          severidad: critica
+        annotations:
+          summary: "{{ $labels.tenant }} · {{ $labels.servidor }}: el agente {{ $labels.job }} no responde"
+          description: "Prometheus no puede leer este agente. El servidor puede estar apagado, el servicio detenido o el firewall bloqueando el puerto."
+
+      - uid: api-sin-respuesta
+        title: "La API no responde (/api/health)"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: 'max by (tenant, servidor) (httpcheck_status{http_status_class="2xx", http_url=~".*/api/health"})'
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+        for: 1m
+        noDataState: Alerting
+        execErrState: Error
+        labels:
+          severidad: critica
+        annotations:
+          summary: "{{ $labels.tenant }} · {{ $labels.servidor }}: /api/health no responde 200"
+          description: "La API está caída o no llega a PostgreSQL (el endpoint de salud también prueba la base)."
+
+      - uid: servicio-caido
+        title: "Servicio detenido"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: 'node_systemd_unit_state{state="active"}'
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+        for: 1m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severidad: critica
+        annotations:
+          summary: "{{ $labels.tenant }} · {{ $labels.servidor }}: el servicio {{ $labels.name }} no está activo"
+          description: "systemd informa que el servicio no está en estado active."
+
+      - uid: cpu-alta
+        title: "CPU alta"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: '100 * (1 - avg by (tenant, servidor) (rate(node_cpu_seconds_total{mode="idle"}[5m])))'
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: { type: gt, params: [85] }
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severidad: advertencia
+        annotations:
+          summary: "{{ $labels.tenant }} · {{ $labels.servidor }}: CPU sobre 85 %"
+          description: "Uso de CPU sostenido durante 5 minutos."
+
+      - uid: memoria-alta
+        title: "Memoria alta"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: '100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)'
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: { type: gt, params: [90] }
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severidad: advertencia
+        annotations:
+          summary: "{{ $labels.tenant }} · {{ $labels.servidor }}: memoria sobre 90 %"
+          description: "Queda menos del 10 % de memoria disponible."
+
+      - uid: disco-lleno
+        title: "Disco casi lleno"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: '100 * (1 - node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"})'
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: { type: gt, params: [85] }
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severidad: advertencia
+        annotations:
+          summary: "{{ $labels.tenant }} · {{ $labels.servidor }}: disco raíz sobre 85 %"
+          description: "El disco principal está casi lleno."
+
+      - uid: postgres-conexiones
+        title: "PostgreSQL cerca del límite de conexiones"
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: '100 * max by (tenant, servidor) (postgresql_backends) / max by (tenant, servidor) (postgresql_connection_max)'
+              instant: true
+              intervalMs: 15000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: { type: gt, params: [80] }
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severidad: advertencia
+        annotations:
+          summary: "{{ $labels.tenant }} · {{ $labels.servidor }}: más del 80 % de las conexiones de PostgreSQL en uso"
+          description: "Si llega al 100 %, la API no podrá abrir nuevas conexiones."

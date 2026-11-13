@@ -1,0 +1,48 @@
+# Variables del monitoreo.
+
+# ---------------------------------------------------------------- Versiones
+node_exporter_version: "1.12.1"
+process_exporter_version: "0.8.7"
+otelcol_version: "0.160.0"
+prometheus_version: "3.13.0"
+# Grafana y Netdata se instalan desde sus repositorios oficiales (última estable).
+
+node_exporter_url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
+process_exporter_url: "https://github.com/ncabatoff/process-exporter/releases/download/v{{ process_exporter_version }}/process-exporter-{{ process_exporter_version }}.linux-amd64.tar.gz"
+otelcol_url: "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v{{ otelcol_version }}/otelcol-contrib_{{ otelcol_version }}_linux_amd64.rpm"
+prometheus_url: "https://github.com/prometheus/prometheus/releases/download/v{{ prometheus_version }}/prometheus-{{ prometheus_version }}.linux-amd64.tar.gz"
+
+# ---------------------------------------------------------------- Puertos
+node_exporter_puerto: 9100
+process_exporter_puerto: 9256
+otel_puerto_prometheus: 8889
+netdata_puerto: 19999
+nginx_estado_puerto: 8080        # /nginx_status, solo local (lo lee el Collector)
+prometheus_puerto: 9090
+grafana_puerto: 3000
+
+# ---------------------------------------------------------------- Prometheus
+prometheus_intervalo: 15s
+prometheus_retencion: 15d
+
+# Prometheus encuentra los servidores solo: busca en estas regiones las instancias
+# EC2 con la etiqueta Proyecto=asistencia y lee sus etiquetas (Tenant, Plan, Rol...).
+# Un tenant nuevo aparece en Grafana sin tocar Prometheus.
+# Las escribe infra/plataforma en el inventario (variable regiones_tenant de Terraform).
+regiones_tenant: "{{ regiones_terraform | default('us-east-1,us-east-2,us-west-2') | split(',') }}"
+
+# Servicios cuyo estado (activo/caído) vigila node_exporter.
+servicios_vigilados:
+  - nginx
+  - postgresql
+  - asistencia-api
+  - asistencia-portal
+  - otelcol-contrib
+  - netdata
+  - node_exporter
+  - process-exporter
+  - prometheus
+  - grafana-server
+
+db_monitoreo_usuario: monitoreo  # usuario de PostgreSQL solo de lectura de estadísticas
+grafana_admin_password: "{{ vault_grafana_password }}"

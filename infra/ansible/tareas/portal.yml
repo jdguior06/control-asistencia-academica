@@ -1,0 +1,118 @@
+# portal: Admin-institucional (API Express + web React) en el servidor plataforma.
+# Antes deben correr postgresql.yml (base del portal), nodejs.yml y codigo.yml (codigo_git).
+# Nginx lo publica el gateway (gateway.yml).
+
+- name: Variables de entorno del portal (.env)
+  ansible.builtin.copy:
+    dest: "{{ portal_dir }}/server/.env"
+    owner: "{{ app_usuario }}"
+    group: "{{ app_usuario }}"
+    mode: "0600"
+    content: |
+      # Administrado por Ansible (infra/ansible). No editar a mano.
+      # Solo local: el gateway Nginx lo publica en http://plataforma.{{ dominio }}
+      HOST=127.0.0.1
+      PORT={{ portal_puerto }}
+      PLATFORM_DATABASE_URL=postgresql://{{ portal_db_usuario }}:{{ portal_db_password }}@127.0.0.1:{{ db_puerto }}/{{ portal_db_nombre }}
+      PLATFORM_ADMIN_NAME={{ portal_admin_nombre }}
+      PLATFORM_ADMIN_EMAIL={{ portal_admin_email }}
+      PLATFORM_ADMIN_PASSWORD={{ portal_admin_password }}
+      # El enlace de invitación se copia desde el panel (sin correo).
+      PLATFORM_MAIL_TRANSPORT=preview
+      # PLATFORM_TENANT_ORIGINS lo escribe gateway.yml en /etc/asistencia-portal/origenes.env
+  diff: false
+  notify: Reiniciar portal
+
+- name: Comprobar si ya está compilado
+  ansible.builtin.stat:
+    path: "{{ portal_dir }}/client/dist/index.html"
+  register: portal_compilado
+
+- name: Instalar dependencias y compilar (solo si cambió el código)
+  when: codigo_git is changed or not portal_compilado.stat.exists
+  become: true
+  become_user: "{{ app_usuario }}"
+  environment:
+    NODE_OPTIONS: --max-old-space-size=1536
+  block:
+    - name: Dependencias de la API (npm ci, sin las de desarrollo)
+      ansible.builtin.command:
+        cmd: npm ci --omit=dev --no-audit --no-fund
+        chdir: "{{ portal_dir }}/server"
+      changed_when: true
+      notify: Reiniciar portal
+
+    - name: Dependencias de la web (npm ci)
+      ansible.builtin.command:
+        cmd: npm ci --no-audit --no-fund
+        chdir: "{{ portal_dir }}/client"
+      changed_when: true
+
+    - name: Compilar la web (npm run build)
+      ansible.builtin.command:
+        cmd: npm run build
+        chdir: "{{ portal_dir }}/client"
+      changed_when: true
+
+- name: Carpeta pública del portal
+  ansible.builtin.file:
+    path: /var/www/portal
+    state: directory
+    mode: "0755"
+
+- name: Publicar la web compilada
+  ansible.builtin.copy:
+    src: "{{ portal_dir }}/client/dist/"
+    dest: /var/www/portal/
+    remote_src: true
+    mode: preserve
+
+- name: Carpeta de ajustes del portal
+  ansible.builtin.file:
+    path: /etc/asistencia-portal
+    state: directory
+    mode: "0755"
+
+# Las migraciones las aplica el propio portal al arrancar.
+- name: Servicio systemd del portal
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/asistencia-portal.service
+    mode: "0644"
+    content: |
+      # Administrado por Ansible (infra/ansible). No editar a mano.
+      [Unit]
+      Description=Portal de la plataforma (Admin-institucional)
+      After=network-online.target postgresql.service
+      Wants=network-online.target
+
+      [Service]
+      User={{ app_usuario }}
+      WorkingDirectory={{ portal_dir }}/server
+      # Lista de tenants (la escribe gateway.yml). El "-" = puede no existir todavía.
+      EnvironmentFile=-/etc/asistencia-portal/origenes.env
+      ExecStart=/usr/bin/node --env-file-if-exists=.env src/index.js
+      Restart=always
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: Reiniciar portal
+
+- name: Portal activo al arrancar
+  ansible.builtin.systemd:
+    name: asistencia-portal
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Aplicar ahora los reinicios pendientes
+  ansible.builtin.meta: flush_handlers
+
+- name: Comprobar que el portal y su base responden
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ portal_puerto }}/api/platform/health"
+    status_code: 200
+  register: portal_respuesta
+  until: portal_respuesta.status == 200
+  retries: 20
+  delay: 5

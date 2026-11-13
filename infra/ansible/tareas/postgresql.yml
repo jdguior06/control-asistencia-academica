@@ -1,0 +1,69 @@
+# postgresql: instala PostgreSQL y crea los usuarios y bases que pida cada playbook.
+#
+# Variables (las pone el playbook):
+#   postgresql_escuchar  '*' (otros servidores se conectan) o 'localhost'
+#   postgresql_accesos   lista de { base, usuario, password, desde }
+#                        desde = IP/32 que puede conectarse a esa base con ese usuario
+
+- name: Instalar PostgreSQL
+  ansible.builtin.dnf:
+    name: postgresql16-server
+    state: present
+
+- name: Crear la base inicial
+  ansible.builtin.command: postgresql-setup --initdb
+  args:
+    creates: /var/lib/pgsql/data/PG_VERSION
+
+- name: Dónde escucha PostgreSQL
+  ansible.builtin.lineinfile:
+    path: /var/lib/pgsql/data/postgresql.conf
+    regexp: '^#?\s*listen_addresses\s*='
+    line: "listen_addresses = '{{ postgresql_escuchar }}'"
+  notify: Reiniciar PostgreSQL
+
+# Al INICIO del archivo: PostgreSQL usa la primera regla que coincide, y en
+# Amazon Linux la regla por defecto para 127.0.0.1 no acepta contraseñas.
+# Segunda barrera (además del firewall): solo esa IP, esa base y ese usuario, con contraseña.
+- name: Quién puede conectarse (pg_hba.conf)
+  ansible.builtin.blockinfile:
+    path: /var/lib/pgsql/data/pg_hba.conf
+    marker: "# {mark} ANSIBLE: accesos de las apps"
+    insertbefore: BOF
+    block: |
+      {% for a in postgresql_accesos %}
+      host    {{ a.base }}    {{ a.usuario }}    {{ a.desde }}    scram-sha-256
+      {% endfor %}
+  notify: Recargar PostgreSQL
+
+- name: PostgreSQL activo al arrancar
+  ansible.builtin.systemd:
+    name: postgresql
+    state: started
+    enabled: true
+
+- name: Aplicar ahora los cambios de configuración
+  ansible.builtin.meta: flush_handlers
+
+# psql es idempotente aquí: crea solo lo que falta y deja la contraseña al día.
+- name: Usuarios y bases de datos
+  ansible.builtin.command:
+    cmd: psql -X -v ON_ERROR_STOP=1
+    chdir: /tmp
+    stdin: |
+      \set usuario '{{ item.usuario }}'
+      \set clave '{{ item.password }}'
+      \set base '{{ item.base }}'
+      SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'usuario', :'clave')
+        WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'usuario') \gexec
+      SELECT format('ALTER ROLE %I PASSWORD %L', :'usuario', :'clave') \gexec
+      SELECT format('CREATE DATABASE %I OWNER %I', :'base', :'usuario')
+        WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = :'base') \gexec
+  loop: "{{ postgresql_accesos }}"
+  loop_control:
+    label: "{{ item.usuario }} -> {{ item.base }}"
+  become: true
+  become_user: postgres
+  register: postgresql_psql
+  changed_when: "'CREATE ROLE' in postgresql_psql.stdout or 'CREATE DATABASE' in postgresql_psql.stdout"
+  no_log: true # lleva la contraseña

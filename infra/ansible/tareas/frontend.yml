@@ -1,0 +1,125 @@
+# frontend: React (Vite) compilado y servido con Nginx, con proxy de /api al backend.
+# Antes deben correr nodejs.yml y codigo.yml (codigo_git).
+
+- name: Variables de compilación (.env del cliente)
+  ansible.builtin.copy:
+    dest: "{{ app_cliente_dir }}/.env"
+    content: "VITE_API_URL=/api\n" # relativa: el navegador habla solo con Nginx
+    owner: "{{ app_usuario }}"
+    group: "{{ app_usuario }}"
+    mode: "0644"
+  register: frontend_env
+
+- name: Comprobar si ya está compilado
+  ansible.builtin.stat:
+    path: "{{ app_cliente_dir }}/dist/index.html"
+  register: frontend_compilado
+
+- name: Instalar dependencias y compilar (solo si cambió algo)
+  when: codigo_git is changed or frontend_env is changed or not frontend_compilado.stat.exists
+  become: true
+  become_user: "{{ app_usuario }}"
+  environment:
+    NODE_OPTIONS: --max-old-space-size=1536
+  block:
+    - name: Instalar dependencias (npm ci)
+      ansible.builtin.command:
+        cmd: npm ci --no-audit --no-fund
+        chdir: "{{ app_cliente_dir }}"
+      changed_when: true
+
+    - name: Compilar (npm run build)
+      ansible.builtin.command:
+        cmd: npm run build
+        chdir: "{{ app_cliente_dir }}"
+      changed_when: true
+
+- name: Instalar Nginx
+  ansible.builtin.dnf:
+    name: nginx
+    state: present
+
+- name: Carpeta pública
+  ansible.builtin.file:
+    path: /var/www/asistencia
+    state: directory
+    mode: "0755"
+
+- name: Publicar la app compilada
+  ansible.builtin.copy:
+    src: "{{ app_cliente_dir }}/dist/"
+    dest: /var/www/asistencia/
+    remote_src: true
+    mode: preserve
+  notify: Recargar Nginx
+
+- name: Configuración del sitio
+  ansible.builtin.copy:
+    dest: /etc/nginx/conf.d/asistencia.conf
+    mode: "0644"
+    content: |
+      # Administrado por Ansible (infra/ansible). No editar a mano.
+      # Sirve la app compilada y reenvía /api (y el WebSocket) al backend por la red privada.
+      # Las visitas llegan desde el gateway de la plataforma ({{ tenant_url }}).
+      map $http_upgrade $connection_upgrade {
+        default upgrade;
+        ''      close;
+      }
+
+      server {
+        listen 80 default_server;
+        server_name _;
+
+        root /var/www/asistencia;
+        index index.html;
+        client_max_body_size 20m;
+
+        # React maneja las rutas (/login, /admin...): si no existe el archivo, devuelve index.html.
+        location / {
+          try_files $uri $uri/ /index.html;
+        }
+
+        location /api/ {
+          proxy_pass http://{{ ip_backend }}:{{ puerto_api }};
+          proxy_http_version 1.1;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection $connection_upgrade;
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $http_x_real_ip;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_read_timeout 300s;
+        }
+      }
+  notify: Recargar Nginx
+
+# Amazon Linux trae un sitio de ejemplo con default_server en el puerto 80.
+- name: Quitar default_server del sitio de ejemplo
+  ansible.builtin.replace:
+    path: /etc/nginx/nginx.conf
+    regexp: '\s+default_server'
+    replace: ''
+  notify: Recargar Nginx
+
+- name: Probar la configuración de Nginx
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Nginx activo al arrancar
+  ansible.builtin.systemd:
+    name: nginx
+    state: started
+    enabled: true
+
+- name: Aplicar ahora los cambios de Nginx
+  ansible.builtin.meta: flush_handlers
+
+- name: Comprobar la página
+  ansible.builtin.uri:
+    url: http://127.0.0.1/
+    status_code: 200
+
+# 502 o 504 = Nginx no llega al backend; 503 = la API no llega a la base.
+- name: Comprobar que Nginx llega a la API (y la API a la base)
+  ansible.builtin.uri:
+    url: http://127.0.0.1/api/health
+    status_code: 200

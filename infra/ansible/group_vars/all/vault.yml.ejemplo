@@ -1,0 +1,11 @@
+# Secretos de la PLATAFORMA. Copia este archivo a vault.yml, cambia los valores y cífralo:
+#   cp group_vars/all/vault.yml.ejemplo group_vars/all/vault.yml
+#   nano group_vars/all/vault.yml
+#   ansible-vault encrypt group_vars/all/vault.yml
+#
+# Solo letras y números, 12 caracteres o más.
+# Los secretos de cada tenant NO van aquí: se generan solos (ver vars.yml).
+
+vault_portal_admin_password: CambiarEstaClave1    # entrar al portal como operador@example.com
+vault_portal_db_password: CambiarEstaClave2       # base de datos del portal
+vault_grafana_password: CambiarEstaClave3         # usuario admin de Grafana

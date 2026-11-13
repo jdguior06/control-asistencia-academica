@@ -1,0 +1,157 @@
+# grafana: paneles y alertas. Todo se configura por archivos (provisioning):
+# la conexión a Prometheus, los paneles (archivos/grafana/dashboards) y las alertas.
+
+- name: Repositorio oficial de Grafana
+  ansible.builtin.yum_repository:
+    name: grafana
+    description: Grafana OSS
+    baseurl: https://rpm.grafana.com
+    gpgkey: https://rpm.grafana.com/gpg.key
+    gpgcheck: true
+    repo_gpgcheck: true
+
+- name: Instalar Grafana
+  ansible.builtin.dnf:
+    name: grafana
+    state: present
+
+- name: Carpeta para los ajustes del servicio
+  ansible.builtin.file:
+    path: /etc/systemd/system/grafana-server.service.d
+    state: directory
+    mode: "0755"
+
+# Variables de entorno GF_*: equivalen a grafana.ini, sin tocar el archivo del paquete.
+- name: Ajustes de Grafana (usuario admin, dirección, sin registro público)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/grafana-server.service.d/asistencia.conf
+    mode: "0600" # lleva la contraseña del admin
+    content: |
+      # Administrado por Ansible (infra/ansible). No editar a mano.
+      [Service]
+      Environment=GF_SERVER_HTTP_PORT={{ grafana_puerto }}
+      Environment=GF_SERVER_ROOT_URL=http://grafana.{{ dominio }}/
+      Environment=GF_SECURITY_ADMIN_USER=admin
+      # Solo se usa la primera vez (cuando Grafana crea su base de datos).
+      Environment=GF_SECURITY_ADMIN_PASSWORD={{ grafana_admin_password }}
+      Environment=GF_USERS_ALLOW_SIGN_UP=false
+      Environment=GF_ANALYTICS_REPORTING_ENABLED=false
+      Environment=GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      Environment=GF_NEWS_NEWS_FEED_ENABLED=false
+  diff: false
+  notify: Reiniciar Grafana
+
+- name: Carpetas de provisioning
+  ansible.builtin.file:
+    path: "/etc/grafana/provisioning/{{ item }}"
+    state: directory
+    owner: root
+    group: grafana
+    mode: "0755"
+  loop: [datasources, dashboards, alerting]
+
+- name: Conexión a Prometheus
+  ansible.builtin.copy:
+    dest: /etc/grafana/provisioning/datasources/prometheus.yml
+    owner: root
+    group: grafana
+    mode: "0640"
+    content: |
+      # Administrado por Ansible (infra/ansible). No editar a mano.
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          uid: prometheus
+          type: prometheus
+          access: proxy
+          url: http://127.0.0.1:{{ prometheus_puerto }}
+          isDefault: true
+          editable: false
+          jsonData:
+            timeInterval: {{ prometheus_intervalo }}
+  notify: Reiniciar Grafana
+
+- name: Dónde buscar los paneles
+  ansible.builtin.copy:
+    dest: /etc/grafana/provisioning/dashboards/asistencia.yml
+    owner: root
+    group: grafana
+    mode: "0640"
+    content: |
+      apiVersion: 1
+      providers:
+        - name: asistencia
+          folder: Asistencia
+          type: file
+          disableDeletion: true
+          allowUiUpdates: false
+          updateIntervalSeconds: 30
+          options:
+            path: /var/lib/grafana/dashboards
+  notify: Reiniciar Grafana
+
+- name: Carpeta de paneles
+  ansible.builtin.file:
+    path: /var/lib/grafana/dashboards
+    state: directory
+    owner: grafana
+    group: grafana
+    mode: "0755"
+
+- name: Paneles propios (Plataforma - Vista general y Tenant - Detalle)
+  ansible.builtin.copy:
+    src: archivos/grafana/dashboards/
+    dest: /var/lib/grafana/dashboards/
+    owner: grafana
+    group: grafana
+    mode: "0644"
+
+# Paneles de la comunidad (grafana.com): Node Exporter Full (1860) y Named processes (249).
+- name: Descargar paneles de la comunidad
+  ansible.builtin.get_url:
+    url: "https://grafana.com/api/dashboards/{{ item.id }}/revisions/latest/download"
+    dest: "/var/lib/grafana/dashboards/{{ item.archivo }}"
+    owner: grafana
+    group: grafana
+    mode: "0644"
+  loop:
+    - { id: 1860, archivo: node-exporter-full.json }
+    - { id: 249, archivo: procesos.json }
+  loop_control:
+    label: "{{ item.archivo }}"
+
+- name: Apuntar los paneles de la comunidad a nuestro Prometheus
+  ansible.builtin.replace:
+    path: "/var/lib/grafana/dashboards/{{ item }}"
+    regexp: '\$\{DS_PROMETHEUS\}'
+    replace: prometheus
+  loop: [node-exporter-full.json, procesos.json]
+
+# Archivo estático: Ansible lo copia tal cual (lleva {{ $labels... }} de Grafana).
+- name: Reglas de alerta
+  ansible.builtin.copy:
+    src: archivos/grafana/alertas.yml
+    dest: /etc/grafana/provisioning/alerting/alertas.yml
+    owner: root
+    group: grafana
+    mode: "0640"
+  notify: Reiniciar Grafana
+
+- name: Grafana activo al arrancar
+  ansible.builtin.systemd:
+    name: grafana-server
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Aplicar ahora los cambios pendientes
+  ansible.builtin.meta: flush_handlers
+
+- name: Comprobar que Grafana responde
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ grafana_puerto }}/api/health"
+    status_code: 200
+  register: grafana_salud
+  until: grafana_salud.status == 200
+  retries: 24
+  delay: 5

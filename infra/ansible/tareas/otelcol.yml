@@ -1,0 +1,160 @@
+# otelcol: OpenTelemetry Collector. Métricas que node_exporter no ve
+# (Nginx en el frontend, salud de la API, PostgreSQL en la base) y la puerta
+# OTLP para cuando la app envíe sus propias métricas y trazas.
+
+- name: Instalar el Collector
+  ansible.builtin.dnf:
+    name: "{{ otelcol_url }}"
+    state: present
+    disable_gpg_check: true # el paquete se descarga de la página oficial de versiones
+
+# ---------------------------------------------------------------- frontend: estado de Nginx
+- name: Página de estado de Nginx (solo frontend)
+  when: "'frontend' in group_names"
+  block:
+    - name: Configuración de /nginx_status (solo responde a 127.0.0.1)
+      ansible.builtin.copy:
+        dest: /etc/nginx/conf.d/estado.conf
+        mode: "0644"
+        content: |
+          # Administrado por Ansible (infra/ansible). No editar a mano.
+          server {
+            listen 127.0.0.1:{{ nginx_estado_puerto }};
+
+            location = /nginx_status {
+              stub_status;
+              allow 127.0.0.1;
+              deny all;
+            }
+          }
+      notify: Recargar Nginx
+
+    - name: Probar la configuración de Nginx
+      ansible.builtin.command: nginx -t
+      changed_when: false
+
+    - name: Aplicar ahora el cambio de Nginx
+      ansible.builtin.meta: flush_handlers
+
+# ---------------------------------------------------------------- base: usuario de solo lectura
+- name: Usuario de PostgreSQL para el Collector (solo base)
+  when: "'base' in group_names"
+  block:
+    - name: Permitir al usuario monitoreo desde el mismo servidor
+      ansible.builtin.blockinfile:
+        path: /var/lib/pgsql/data/pg_hba.conf
+        marker: "# {mark} ANSIBLE: monitoreo (OpenTelemetry Collector)"
+        insertbefore: BOF
+        block: |
+          host    all    {{ db_monitoreo_usuario }}    127.0.0.1/32    scram-sha-256
+      notify: Recargar PostgreSQL
+
+    # Rol pg_monitor: puede leer estadísticas, no los datos de la app.
+    - name: Crear el usuario monitoreo
+      ansible.builtin.command:
+        cmd: psql -X -v ON_ERROR_STOP=1
+        chdir: /tmp
+        stdin: |
+          \set usuario '{{ db_monitoreo_usuario }}'
+          \set clave '{{ db_monitoreo_password }}'
+          SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'usuario', :'clave')
+            WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'usuario') \gexec
+          SELECT format('ALTER ROLE %I PASSWORD %L', :'usuario', :'clave') \gexec
+          SELECT format('GRANT pg_monitor TO %I', :'usuario') \gexec
+      become: true
+      become_user: postgres
+      register: otelcol_psql
+      changed_when: "'CREATE ROLE' in otelcol_psql.stdout"
+      no_log: true # lleva la contraseña
+
+    - name: Aplicar ahora el cambio de pg_hba.conf
+      ansible.builtin.meta: flush_handlers
+
+# ---------------------------------------------------------------- configuración
+# validate: el propio Collector revisa la configuración antes de guardarla.
+- name: Configuración del Collector
+  ansible.builtin.copy:
+    dest: /etc/otelcol-contrib/config.yaml
+    owner: root
+    group: otelcol-contrib
+    mode: "0640" # en la base lleva la contraseña del usuario monitoreo
+    validate: /usr/bin/otelcol-contrib validate --config=%s
+    content: |
+      # Administrado por Ansible (infra/ansible). No editar a mano.
+      # OpenTelemetry Collector en {{ inventory_hostname }}: publica en formato
+      # Prometheus en el puerto {{ otel_puerto_prometheus }}.
+      {% set receptores = ['otlp'] %}
+      {% if 'frontend' in group_names %}{% set receptores = receptores + ['nginx', 'http_check'] %}{% endif %}
+      {% if 'backend' in group_names %}{% set receptores = receptores + ['http_check'] %}{% endif %}
+      {% if 'base' in group_names %}{% set receptores = receptores + ['postgresql'] %}{% endif %}
+      receivers:
+        # Puerta para la app (métricas y trazas), solo desde el mismo servidor.
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 127.0.0.1:4317
+            http:
+              endpoint: 127.0.0.1:4318
+      {% if 'frontend' in group_names %}
+        nginx:
+          endpoint: http://127.0.0.1:{{ nginx_estado_puerto }}/nginx_status
+          collection_interval: 15s
+        # La página y la API a través de Nginx.
+        http_check:
+          collection_interval: 15s
+          targets:
+            - endpoint: http://127.0.0.1/
+              method: GET
+            - endpoint: http://127.0.0.1/api/health
+              method: GET
+      {% endif %}
+      {% if 'backend' in group_names %}
+        # /api/health también prueba la conexión a la base.
+        http_check:
+          collection_interval: 15s
+          targets:
+            - endpoint: http://127.0.0.1:{{ puerto_api }}/api/health
+              method: GET
+      {% endif %}
+      {% if 'base' in group_names %}
+        postgresql:
+          endpoint: 127.0.0.1:{{ db_puerto }}
+          transport: tcp
+          username: {{ db_monitoreo_usuario }}
+          password: {{ db_monitoreo_password }}
+          databases: [{{ db_nombre }}]
+          collection_interval: 30s
+          tls:
+            insecure: true
+      {% endif %}
+
+      processors:
+        batch: {}
+
+      exporters:
+        prometheus:
+          endpoint: 0.0.0.0:{{ otel_puerto_prometheus }}
+          # Si una serie deja de llegar (por ejemplo, la API se cae), desaparece a los 45 s.
+          metric_expiration: 45s
+        # Las trazas, por ahora, solo se escriben en el log del Collector.
+        debug:
+          verbosity: basic
+
+      service:
+        pipelines:
+          metrics:
+            receivers: [{{ receptores | join(', ') }}]
+            processors: [batch]
+            exporters: [prometheus]
+          traces:
+            receivers: [otlp]
+            processors: [batch]
+            exporters: [debug]
+  diff: false
+  notify: Reiniciar Collector
+
+- name: Collector activo al arrancar
+  ansible.builtin.systemd:
+    name: otelcol-contrib
+    state: started
+    enabled: true

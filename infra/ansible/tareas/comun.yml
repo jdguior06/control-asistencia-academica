@@ -1,0 +1,6 @@
+# comun: lo que necesitan todos los servidores (Amazon Linux 2023).
+
+- name: Paquetes básicos
+  ansible.builtin.dnf:
+    name: [git, acl, tar, gzip]
+    state: present

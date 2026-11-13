@@ -1,0 +1,151 @@
+# prometheus: cada 15 s lee a los agentes de todos los servidores y guarda las métricas.
+#
+# No hay una lista fija de servidores: Prometheus pregunta a AWS (rol de IAM del
+# servidor de monitoreo) qué instancias tienen la etiqueta Proyecto=asistencia en
+# cada región, y convierte sus etiquetas de AWS en etiquetas de las métricas:
+#   Tenant -> tenant · Plan -> plan · Entorno -> entorno · Rol -> rol
+#   Name -> servidor · Motor -> motor · región -> region
+# Un tenant nuevo aparece solo en Grafana; uno borrado desaparece solo.
+
+- name: Usuario del sistema prometheus
+  ansible.builtin.user:
+    name: prometheus
+    system: true
+    shell: /sbin/nologin
+    create_home: false
+
+- name: Descargar y descomprimir Prometheus {{ prometheus_version }}
+  ansible.builtin.unarchive:
+    src: "{{ prometheus_url }}"
+    dest: /opt
+    remote_src: true
+    creates: "/opt/prometheus-{{ prometheus_version }}.linux-amd64/prometheus"
+
+- name: Usar la versión instalada (prometheus y promtool)
+  ansible.builtin.file:
+    src: "/opt/prometheus-{{ prometheus_version }}.linux-amd64/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    state: link
+  loop: [prometheus, promtool]
+  notify: Reiniciar Prometheus
+
+- name: Carpetas de configuración y datos
+  ansible.builtin.file:
+    path: "{{ item.ruta }}"
+    state: directory
+    owner: "{{ item.dueno }}"
+    group: "{{ item.dueno }}"
+    mode: "0755"
+  loop:
+    - { ruta: /etc/prometheus, dueno: root }
+    - { ruta: /var/lib/prometheus, dueno: prometheus }
+
+# validate: promtool revisa el archivo antes de guardarlo.
+- name: Qué leer y cómo etiquetarlo (prometheus.yml)
+  ansible.builtin.copy:
+    dest: /etc/prometheus/prometheus.yml
+    mode: "0644"
+    validate: /usr/local/bin/promtool check config %s
+    content: |
+      # Administrado por Ansible (infra/ansible). No editar a mano.
+      {% set trabajos = [
+           {'nombre': 'node',     'puerto': node_exporter_puerto,    'plataforma': true},
+           {'nombre': 'procesos', 'puerto': process_exporter_puerto, 'plataforma': false},
+           {'nombre': 'otel',     'puerto': otel_puerto_prometheus,  'plataforma': false},
+           {'nombre': 'netdata',  'puerto': netdata_puerto,          'plataforma': false},
+         ] %}
+      global:
+        scrape_interval: {{ prometheus_intervalo }}
+        evaluation_interval: {{ prometheus_intervalo }}
+        external_labels:
+          proyecto: asistencia
+
+      scrape_configs:
+        # Prometheus se vigila a sí mismo.
+        - job_name: prometheus
+          static_configs:
+            - targets: ["127.0.0.1:{{ prometheus_puerto }}"]
+              labels: { tenant: plataforma, plan: plataforma, entorno: plataforma, rol: monitoreo, servidor: {{ inventory_hostname }} }
+      {% for t in trabajos %}
+
+        - job_name: {{ t.nombre }}
+      {% if t.nombre == 'netdata' %}
+          # Solo los gráficos generales del sistema (system.*), para no llenar Prometheus.
+          metrics_path: /api/v1/allmetrics
+          params:
+            format: [prometheus]
+            filter: ["system.*"]
+      {% endif %}
+          ec2_sd_configs:
+      {% for region in regiones_tenant %}
+            - region: {{ region }}
+              port: {{ t.puerto }}           # se lee por la IP privada (peering)
+              refresh_interval: 60s
+              filters:
+                - name: tag:Proyecto
+                  values: [asistencia]
+                - name: instance-state-name
+                  values: [running]
+      {% endfor %}
+          relabel_configs:
+      {% if not t.plataforma %}
+            # Este agente solo está en los servidores de los tenants.
+            - source_labels: [__meta_ec2_tag_Tenant]
+              regex: plataforma
+              action: drop
+      {% endif %}
+            - { source_labels: [__meta_ec2_tag_Tenant], target_label: tenant }
+            - { source_labels: [__meta_ec2_tag_Plan], target_label: plan }
+            - { source_labels: [__meta_ec2_tag_Entorno], target_label: entorno }
+            - { source_labels: [__meta_ec2_tag_Rol], target_label: rol }
+            - { source_labels: [__meta_ec2_tag_Name], target_label: servidor }
+            - { source_labels: [__meta_ec2_tag_Motor], target_label: motor }
+            - { source_labels: [__meta_ec2_region], target_label: region }
+      {% endfor %}
+  notify: Recargar Prometheus
+
+- name: Servicio systemd de Prometheus
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/prometheus.service
+    mode: "0644"
+    content: |
+      # Administrado por Ansible (infra/ansible). No editar a mano.
+      [Unit]
+      Description=Prometheus
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      User=prometheus
+      ExecStart=/usr/local/bin/prometheus \
+        --config.file=/etc/prometheus/prometheus.yml \
+        --storage.tsdb.path=/var/lib/prometheus \
+        --storage.tsdb.retention.time={{ prometheus_retencion }} \
+        --web.listen-address=:{{ prometheus_puerto }}
+      # "Recargar" = volver a leer prometheus.yml sin reiniciar.
+      ExecReload=/bin/kill -HUP $MAINPID
+      Restart=always
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: Reiniciar Prometheus
+
+- name: Prometheus activo al arrancar
+  ansible.builtin.systemd:
+    name: prometheus
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Aplicar ahora los cambios pendientes
+  ansible.builtin.meta: flush_handlers
+
+- name: Comprobar que Prometheus está listo
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ prometheus_puerto }}/-/ready"
+    status_code: 200
+  register: prometheus_listo
+  until: prometheus_listo.status == 200
+  retries: 12
+  delay: 5

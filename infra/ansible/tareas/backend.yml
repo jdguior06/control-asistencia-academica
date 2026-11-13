@@ -1,0 +1,117 @@
+# backend: API NestJS del tenant (.env, compilación, migraciones y servicio systemd).
+# Antes deben correr nodejs.yml y codigo.yml (codigo_git).
+
+- name: Variables de entorno de la API (.env)
+  ansible.builtin.copy:
+    dest: "{{ app_server_dir }}/.env"
+    owner: "{{ app_usuario }}"
+    group: "{{ app_usuario }}"
+    mode: "0600"
+    content: |
+      # Administrado por Ansible (infra/ansible). No editar a mano.
+      PORT={{ puerto_api }}
+      # Todas las interfaces: Nginx llega desde el frontend (el firewall decide quién entra).
+      HOST=0.0.0.0
+      CORS_ORIGIN={{ tenant_url }}
+
+      DB_HOST={{ ip_base }}
+      DB_PORT={{ db_puerto }}
+      DB_USER={{ db_usuario }}
+      DB_PASSWORD={{ db_password }}
+      DB_NAME={{ db_nombre }}
+
+      JWT_SECRET={{ jwt_secret }}
+      JWT_EXPIRES_IN={{ jwt_expira }}
+      APP_TZ={{ zona_horaria }}
+
+      {% if tenant_invitacion %}
+      # El primer administrador lo invita el portal.
+      PLATFORM_TENANT_SLUG={{ tenant_slug }}
+      PLATFORM_BOOTSTRAP_KEY={{ platform_bootstrap_key }}
+      {% else %}
+      # Se crea este administrador al arrancar con la base vacía.
+      ADMIN_EMAIL={{ admin_email }}
+      ADMIN_PASSWORD={{ admin_password }}
+      ADMIN_NAME={{ admin_nombre }}
+      {% endif %}
+  diff: false # con --diff no mostrar las contraseñas
+  notify: Reiniciar API
+
+- name: Comprobar si ya está compilada
+  ansible.builtin.stat:
+    path: "{{ app_server_dir }}/dist/main.js"
+  register: backend_compilado
+
+- name: Instalar dependencias y compilar (solo si cambió el código)
+  when: codigo_git is changed or not backend_compilado.stat.exists
+  become: true
+  become_user: "{{ app_usuario }}"
+  environment:
+    NODE_OPTIONS: --max-old-space-size=1536
+  block:
+    # Con las de desarrollo: migration:run usa ts-node.
+    - name: Instalar dependencias (npm ci)
+      ansible.builtin.command:
+        cmd: npm ci --no-audit --no-fund
+        chdir: "{{ app_server_dir }}"
+      changed_when: true
+
+    - name: Compilar (npm run build)
+      ansible.builtin.command:
+        cmd: npm run build
+        chdir: "{{ app_server_dir }}"
+      changed_when: true
+      notify: Reiniciar API
+
+# TypeORM recuerda qué migraciones ya aplicó: se puede ejecutar siempre.
+- name: Migraciones de la base de datos
+  ansible.builtin.command:
+    cmd: npm run migration:run
+    chdir: "{{ app_server_dir }}"
+  become: true
+  become_user: "{{ app_usuario }}"
+  register: backend_migraciones
+  changed_when: "'No migrations are pending' not in backend_migraciones.stdout"
+
+- name: Servicio systemd de la API
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/asistencia-api.service
+    mode: "0644"
+    content: |
+      # Administrado por Ansible (infra/ansible). No editar a mano.
+      [Unit]
+      Description=API Control de Asistencia ({{ tenant_slug }})
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      User={{ app_usuario }}
+      WorkingDirectory={{ app_server_dir }}
+      Environment=NODE_ENV=production
+      ExecStart=/usr/bin/node dist/main.js
+      Restart=always
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: Reiniciar API
+
+- name: API activa al arrancar
+  ansible.builtin.systemd:
+    name: asistencia-api
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Aplicar ahora los reinicios pendientes
+  ansible.builtin.meta: flush_handlers
+
+# /api/health responde 200 solo si la API también llega a PostgreSQL.
+- name: Comprobar que la API y la base responden
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ puerto_api }}/api/health"
+    status_code: 200
+  register: backend_respuesta
+  until: backend_respuesta.status == 200
+  retries: 20
+  delay: 5

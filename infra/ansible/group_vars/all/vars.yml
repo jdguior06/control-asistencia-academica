@@ -1,0 +1,54 @@
+# Variables del proyecto. Los secretos de la plataforma están en vault.yml (cifrado);
+# los de cada tenant se generan solos (ver "Secretos de cada tenant").
+
+# ---------------------------------------------------------------- Código
+# Tu fork: de aquí salen el portal (Admin-institucional) y la app de cada tenant.
+app_repo: https://github.com/jdguior06/control-asistencia-academica.git
+app_rama: plataforma
+app_usuario: asistencia                  # usuario del sistema que ejecuta las apps (no root)
+app_home: /opt/asistencia
+app_dir: /opt/asistencia/app             # aquí se clona el repositorio
+node_version_mayor: 22
+zona_horaria: America/La_Paz
+
+# ---------------------------------------------------------------- Portal (servidor plataforma)
+portal_dir: "{{ app_dir }}/Admin-institucional"
+portal_puerto: 4300
+portal_db_nombre: asistencia_platform
+portal_db_usuario: asistencia_platform
+portal_admin_nombre: Operador
+portal_admin_email: operador@example.com
+portal_db_password: "{{ vault_portal_db_password }}"
+portal_admin_password: "{{ vault_portal_admin_password }}"
+
+# ---------------------------------------------------------------- App de cada tenant
+app_proyecto: admin-docente-alumno
+app_server_dir: "{{ app_dir }}/{{ app_proyecto }}/server"
+app_cliente_dir: "{{ app_dir }}/{{ app_proyecto }}/client"
+puerto_api: 3000
+jwt_expira: 8h
+db_nombre: asistencia
+db_usuario: asistencia
+db_puerto: 5432
+admin_nombre: Administrador
+admin_email: admin@example.com
+
+# true  = el primer administrador lo invita el portal (necesita HTTPS: etapa 5).
+# false = se crea admin_email con una contraseña generada (ver abajo).
+tenant_invitacion: false
+
+# ---------------------------------------------------------------- Secretos de cada tenant
+# Se generan la primera vez y se guardan en infra/generado/tenants/<slug>/ (no va a git).
+# Así cada tenant tiene contraseñas distintas y no hace falta escribirlas a mano.
+tenant_secretos: "{{ playbook_dir }}/../generado/tenants/{{ tenant_slug }}"
+db_password: "{{ lookup('ansible.builtin.password', tenant_secretos ~ '/db_password', chars=['ascii_letters', 'digits'], length=32) }}"
+jwt_secret: "{{ lookup('ansible.builtin.password', tenant_secretos ~ '/jwt_secret', chars=['ascii_letters', 'digits'], length=48) }}"
+admin_password: "{{ lookup('ansible.builtin.password', tenant_secretos ~ '/admin_password', chars=['ascii_letters', 'digits'], length=16) }}"
+db_monitoreo_password: "{{ lookup('ansible.builtin.password', tenant_secretos ~ '/db_monitoreo_password', chars=['ascii_letters', 'digits'], length=32) }}"
+platform_bootstrap_key: "{{ lookup('ansible.builtin.password', tenant_secretos ~ '/clave_vinculacion', chars=['ascii_letters', 'digits'], length=48) }}"
+
+# ---------------------------------------------------------------- Dónde está cada servidor (tenant)
+ip_backend: "{{ hostvars[groups['backend'][0]]['ip_privada'] }}"
+ip_base: "{{ hostvars[groups['base'][0]]['ip_privada'] }}"
+ip_frontend: "{{ hostvars[groups['frontend'][0]]['ip_privada'] }}"
+tenant_url: "http://{{ tenant_slug }}.{{ dominio }}"

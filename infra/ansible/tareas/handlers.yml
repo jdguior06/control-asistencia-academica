@@ -1,0 +1,75 @@
+# Reinicios y recargas que piden las tareas con "notify".
+# Cada playbook los carga con:
+#   handlers:
+#     - ansible.builtin.import_tasks: tareas/handlers.yml
+# Solo se ejecutan si alguna tarea los avisó, y una sola vez.
+
+- name: Activar swap
+  ansible.builtin.shell: mkswap /swapfile && swapon /swapfile
+  changed_when: true
+
+- name: Reiniciar PostgreSQL
+  ansible.builtin.systemd:
+    name: postgresql
+    state: restarted
+
+- name: Recargar PostgreSQL
+  ansible.builtin.systemd:
+    name: postgresql
+    state: reloaded
+
+- name: Reiniciar API
+  ansible.builtin.systemd:
+    name: asistencia-api
+    state: restarted
+    daemon_reload: true
+
+- name: Reiniciar portal
+  ansible.builtin.systemd:
+    name: asistencia-portal
+    state: restarted
+    daemon_reload: true
+
+- name: Recargar Nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded
+
+- name: Reiniciar node_exporter
+  ansible.builtin.systemd:
+    name: node_exporter
+    state: restarted
+    daemon_reload: true
+
+- name: Reiniciar process-exporter
+  ansible.builtin.systemd:
+    name: process-exporter
+    state: restarted
+    daemon_reload: true
+
+- name: Reiniciar Collector
+  ansible.builtin.systemd:
+    name: otelcol-contrib
+    state: restarted
+
+- name: Reiniciar Netdata
+  ansible.builtin.systemd:
+    name: netdata
+    state: restarted
+
+- name: Reiniciar Prometheus
+  ansible.builtin.systemd:
+    name: prometheus
+    state: restarted
+    daemon_reload: true
+
+- name: Recargar Prometheus
+  ansible.builtin.systemd:
+    name: prometheus
+    state: reloaded
+
+- name: Reiniciar Grafana
+  ansible.builtin.systemd:
+    name: grafana-server
+    state: restarted
+    daemon_reload: true

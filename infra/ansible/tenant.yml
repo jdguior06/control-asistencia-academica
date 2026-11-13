@@ -1,0 +1,145 @@
+# Configura UN tenant completo (lo creó cualquier motor: Terraform, OpenTofu,
+# Pulumi o CloudFormation):
+#   base      PostgreSQL
+#   backend   API NestJS
+#   frontend  React + Nginx
+#   los tres  agentes de monitoreo (Prometheus los encuentra solo)
+#   gateway   ruta http://<slug>.<ip>.nip.io en el servidor plataforma
+#
+#   python3 ../scripts/inventario.py utepsa       # escribe inventarios/utepsa.ini
+#   ansible-playbook -i inventarios/utepsa.ini tenant.yml
+#
+# Ansible entra a los servidores del tenant SALTANDO por el servidor plataforma
+# (no tienen SSH abierto a internet). Se puede ejecutar todas las veces que quieras.
+
+- name: Secretos del tenant
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    # Se generan aquí, una sola vez, antes de que los usen los servidores.
+    # Quedan en infra/generado/tenants/<slug>/ (no va a git).
+    - name: Crear las contraseñas del tenant si no existen
+      ansible.builtin.assert:
+        that: lookup('ansible.builtin.vars', item) | length >= 16
+        quiet: true
+      loop: [db_password, jwt_secret, admin_password, db_monitoreo_password, platform_bootstrap_key]
+      no_log: true
+
+- name: Esperar a que los servidores estén listos
+  hosts: tenant
+  gather_facts: false
+  tasks:
+    - name: Esperar a que responda SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Esperar a que termine el primer arranque (cloud-init)
+      ansible.builtin.command: cloud-init status --wait
+      become: true
+      register: estado_cloud_init
+      changed_when: false
+      failed_when: estado_cloud_init.rc not in [0, 2] # 2 = terminó con avisos
+
+- name: Configuración común
+  hosts: tenant
+  become: true
+  tasks:
+    - name: Comun
+      ansible.builtin.import_tasks: tareas/comun.yml
+
+- name: Base de datos (PostgreSQL)
+  hosts: base
+  become: true
+  vars:
+    postgresql_escuchar: "*"
+    postgresql_accesos:
+      - base: "{{ db_nombre }}"
+        usuario: "{{ db_usuario }}"
+        password: "{{ db_password }}"
+        desde: "{{ ip_backend }}/32"
+  tasks:
+    - name: Postgresql
+      ansible.builtin.import_tasks: tareas/postgresql.yml
+  handlers:
+    - name: Reinicios
+      ansible.builtin.import_tasks: tareas/handlers.yml
+
+- name: Backend (API NestJS)
+  hosts: backend
+  become: true
+  tasks:
+    - name: Nodejs
+      ansible.builtin.import_tasks: tareas/nodejs.yml
+    - name: Codigo
+      ansible.builtin.import_tasks: tareas/codigo.yml
+    - name: Backend
+      ansible.builtin.import_tasks: tareas/backend.yml
+  handlers:
+    - name: Reinicios
+      ansible.builtin.import_tasks: tareas/handlers.yml
+
+- name: Frontend (React + Nginx)
+  hosts: frontend
+  become: true
+  tasks:
+    - name: Nodejs
+      ansible.builtin.import_tasks: tareas/nodejs.yml
+    - name: Codigo
+      ansible.builtin.import_tasks: tareas/codigo.yml
+    - name: Frontend
+      ansible.builtin.import_tasks: tareas/frontend.yml
+  handlers:
+    - name: Reinicios
+      ansible.builtin.import_tasks: tareas/handlers.yml
+
+- name: Agentes de monitoreo
+  hosts: tenant
+  become: true
+  tasks:
+    - name: Node_exporter
+      ansible.builtin.import_tasks: tareas/node_exporter.yml
+    - name: Process_exporter
+      ansible.builtin.import_tasks: tareas/process_exporter.yml
+    - name: Otelcol
+      ansible.builtin.import_tasks: tareas/otelcol.yml
+    - name: Netdata
+      ansible.builtin.import_tasks: tareas/netdata.yml
+  handlers:
+    - name: Reinicios
+      ansible.builtin.import_tasks: tareas/handlers.yml
+
+- name: Ruta en el gateway
+  hosts: plataforma
+  become: true
+  tasks:
+    - name: Gateway
+      ansible.builtin.import_tasks: tareas/gateway.yml
+
+    - name: Comprobar el tenant a través del gateway (gateway -> peering -> frontend -> backend -> base)
+      ansible.builtin.uri:
+        url: http://127.0.0.1/api/health
+        headers:
+          Host: "{{ tenant_slug }}.{{ dominio }}"
+        status_code: 200
+      register: tenant_respuesta
+      until: tenant_respuesta.status == 200
+      retries: 6
+      delay: 5
+  handlers:
+    - name: Reinicios
+      ansible.builtin.import_tasks: tareas/handlers.yml
+
+- name: Resumen
+  hosts: plataforma
+  gather_facts: false
+  tasks:
+    - name: Dirección del tenant
+      ansible.builtin.debug:
+        msg:
+          - "Listo: {{ tenant_url }}"
+          - >-
+            {{ 'Primer administrador: lo invita el portal (clave de vinculación en ' ~ tenant_secretos ~ '/clave_vinculacion)'
+            if tenant_invitacion else
+            'Usuario ' ~ admin_email ~ ', contraseña en infra/generado/tenants/' ~ tenant_slug ~ '/admin_password' }}
+          - "Grafana: http://grafana.{{ dominio }} -> Tenant - Detalle -> {{ tenant_slug }}"

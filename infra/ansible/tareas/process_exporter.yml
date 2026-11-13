@@ -1,0 +1,70 @@
+# process_exporter: CPU y memoria de cada proceso (node, nginx, postgres...).
+
+- name: Usuario del sistema process-exporter
+  ansible.builtin.user:
+    name: process-exporter
+    system: true
+    shell: /sbin/nologin
+    create_home: false
+
+- name: Descargar y descomprimir process-exporter {{ process_exporter_version }}
+  ansible.builtin.unarchive:
+    src: "{{ process_exporter_url }}"
+    dest: /opt
+    remote_src: true
+    creates: "/opt/process-exporter-{{ process_exporter_version }}.linux-amd64/process-exporter"
+
+- name: Usar la versión instalada
+  ansible.builtin.file:
+    src: "/opt/process-exporter-{{ process_exporter_version }}.linux-amd64/process-exporter"
+    dest: /usr/local/bin/process-exporter
+    state: link
+  notify: Reiniciar process-exporter
+
+- name: Carpeta de configuración
+  ansible.builtin.file:
+    path: /etc/process-exporter
+    state: directory
+    mode: "0755"
+
+# Agrupa los procesos por nombre de comando ({{.Comm}} es de process-exporter, no de Ansible).
+- name: Qué procesos agrupar
+  ansible.builtin.copy:
+    dest: /etc/process-exporter/config.yml
+    mode: "0644"
+    content: |
+      process_names:
+        - name: "{% raw %}{{.Comm}}{% endraw %}"
+          cmdline:
+            - ".+"
+  notify: Reiniciar process-exporter
+
+- name: Servicio systemd de process-exporter
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/process-exporter.service
+    mode: "0644"
+    content: |
+      # Administrado por Ansible (infra/ansible). No editar a mano.
+      [Unit]
+      Description=process-exporter (metricas por proceso)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      User=process-exporter
+      ExecStart=/usr/local/bin/process-exporter \
+        --config.path=/etc/process-exporter/config.yml \
+        --web.listen-address=:{{ process_exporter_puerto }}
+      Restart=always
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: Reiniciar process-exporter
+
+- name: Process-exporter activo al arrancar
+  ansible.builtin.systemd:
+    name: process-exporter
+    state: started
+    enabled: true
+    daemon_reload: true
