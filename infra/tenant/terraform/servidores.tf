@@ -28,10 +28,14 @@ locals {
 }
 
 resource "aws_instance" "servidor" {
+  # Hallazgos de Checkov aceptados por diseño (se ven en el log del escaneo):
+  #checkov:skip=CKV_AWS_126:El monitoreo detallado de CloudWatch tiene costo; se usa Prometheus
+  #checkov:skip=CKV2_AWS_41:Los servidores del tenant no usan la API de AWS: no necesitan rol de IAM
   for_each = toset(local.roles)
 
   ami                    = local.imagen
   instance_type          = local.tamanos[each.key].tipo
+  ebs_optimized          = true
   subnet_id              = aws_subnet.tenant.id
   private_ip             = cidrhost(local.subred, local.ip_final[each.key])
   vpc_security_group_ids = [aws_security_group.servidor[each.key].id]

@@ -22,8 +22,17 @@ function allowedTenantOrigin(value) {
 
   const local = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
   const development = process.env.NODE_ENV !== 'production';
-  if (url.protocol !== 'https:' && !(development && local && url.protocol === 'http:')) {
+  // PLATFORM_ALLOW_HTTP_TENANTS=true: acepta instalaciones por HTTP (demo con nip.io, sin certificados).
+  const allowHttp = process.env.PLATFORM_ALLOW_HTTP_TENANTS === 'true';
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && (allowHttp || (development && local)))) {
     throw new InvitationError(400, 'La instalación debe usar HTTPS. HTTP está disponible para pruebas locales.');
+  }
+
+  // PLATFORM_TENANT_DOMAIN=<ip>.nip.io: acepta <slug>.<ip>.nip.io, los tenants que crea la plataforma.
+  const domain = process.env.PLATFORM_TENANT_DOMAIN?.trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+  if (domain && !url.port && url.hostname.endsWith(`.${domain}`)
+    && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(url.hostname.slice(0, -domain.length - 1))) {
+    return url.origin;
   }
 
   const localDefaults = development ? 'http://127.0.0.1:5173,http://localhost:5173' : '';

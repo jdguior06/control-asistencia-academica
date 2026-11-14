@@ -30,7 +30,7 @@
           Falta {{ item }} en group_vars/all/vault.yml, o no sirve: 12 o más
           caracteres, solo letras y números. Ver vault.yml.ejemplo.
         quiet: true
-      loop: [vault_portal_admin_password, vault_portal_db_password, vault_grafana_password]
+      loop: [vault_portal_admin_password, vault_portal_db_password, vault_grafana_password, vault_pulumi_passphrase]
       run_once: true
 
 - name: Configuración común y métricas del sistema
@@ -70,6 +70,25 @@
     - name: Reinicios
       ansible.builtin.import_tasks: tareas/handlers.yml
 
+- name: Worker de aprovisionamiento (crea los tenants desde el portal)
+  hosts: plataforma
+  become: true
+  tasks:
+    - name: Comprobar que existe la plataforma.json de tu PC (la escribe terraform apply)
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../generado/plataforma.json"
+      delegate_to: localhost
+      become: false
+      register: plataforma_json
+      failed_when: not plataforma_json.stat.exists
+    - name: Herramientas
+      ansible.builtin.import_tasks: tareas/herramientas.yml
+    - name: Worker
+      ansible.builtin.import_tasks: tareas/worker.yml
+  handlers:
+    - name: Reinicios
+      ansible.builtin.import_tasks: tareas/handlers.yml
+
 - name: Prometheus y Grafana
   hosts: monitoreo
   become: true
@@ -92,4 +111,5 @@
           - "Portal:     http://{{ ansible_host }}  ({{ portal_admin_email }}, contraseña vault_portal_admin_password)"
           - "Grafana:    http://{{ hostvars[groups['monitoreo'][0]]['ansible_host'] }}:{{ grafana_puerto }}  (admin, contraseña vault_grafana_password)"
           - "Prometheus: http://{{ hostvars[groups['monitoreo'][0]]['ansible_host'] }}:{{ prometheus_puerto }}/targets"
-          - "Tenants:    http://<slug>.{{ dominio }}"
+          - "Tenants:    http://<slug>.{{ dominio }} (se crean desde el portal: Instituciones → Crear institución)"
+          - "Worker:     ssh ec2-user@{{ ansible_host }} 'sudo journalctl -u asistencia-worker -f'"

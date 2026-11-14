@@ -1,0 +1,22 @@
+# Configuración de Gitleaks para infra/ (paso 2 de scripts/aprovisionar.sh).
+# Usa las reglas por defecto y excluye lo que no es código del repositorio.
+title = "Secretos en infra/"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Archivos generados en cada servidor (contraseñas de los tenants), dependencias y bloqueos"
+paths = [
+  '''(^|/)generado/''',
+  '''(^|/)\.terraform/''',
+  '''(^|/)node_modules/''',
+  '''\.terraform\.lock\.hcl$''',
+  '''package-lock\.json$''',
+  '''vault\.yml\.ejemplo$''',
+]
+
+[[allowlists]]
+description = "Variables de Ansible: el valor es una plantilla, no un secreto"
+regexTarget = "line"
+regexes = ['''\{\{.*\}\}''']

@@ -19,6 +19,9 @@
       PLATFORM_ADMIN_PASSWORD={{ portal_admin_password }}
       # El enlace de invitación se copia desde el panel (sin correo).
       PLATFORM_MAIL_TRANSPORT=preview
+      # Tenants de la plataforma: http://<slug>.{{ dominio }} (HTTP en la demo, sin certificados).
+      PLATFORM_TENANT_DOMAIN={{ dominio }}
+      PLATFORM_ALLOW_HTTP_TENANTS=true
       # PLATFORM_TENANT_ORIGINS lo escribe gateway.yml en /etc/asistencia-portal/origenes.env
   diff: false
   notify: Reiniciar portal

@@ -50,6 +50,30 @@ export interface TenantRequest extends TrackedRequest {
   tenant?: TenantConfiguration
 }
 
+export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed'
+export type StepStatus = 'running' | 'ok' | 'warning' | 'error'
+
+export interface JobStep {
+  number: number
+  title: string
+  status: StepStatus
+  summary?: string
+}
+
+// Un trabajo del worker: crear o eliminar la infraestructura de una institución.
+export interface ProvisioningJob {
+  id: string
+  action: 'create' | 'delete'
+  status: JobStatus
+  steps: JobStep[]
+  log: string
+  result?: { url?: string; motor?: string; previewUrl?: string; invitationStatus?: InvitationStatus; invitationError?: string }
+  error?: string
+  createdAt: string
+  startedAt?: string
+  finishedAt?: string
+}
+
 export interface PlatformUser {
   name: string
   email: string

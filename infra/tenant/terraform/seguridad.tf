@@ -20,6 +20,7 @@ locals {
 }
 
 resource "aws_security_group" "servidor" {
+  #checkov:skip=CKV2_AWS_5:Falso positivo con for_each: cada grupo se asigna a su servidor en servidores.tf
   for_each = toset(local.roles)
 
   name        = "${local.nombre}-sg-${each.key}"

@@ -8,7 +8,11 @@
 #
 #   cd infra\packer
 #   packer init .
-#   packer build .
+#   packer build .                                  # las 3 regiones a la vez
+#   packer build -only="amazon-ebs.oregon" .        # solo una región
+#
+# La imagen se construye EN CADA REGIÓN (no se copia): la cuenta del plan gratuito
+# tiene prohibido copiar AMIs entre regiones (ec2:CopyImage).
 #
 # Volver a crearla cuando cambie el código de la app o la lista de paquetes.
 
@@ -19,18 +23,6 @@ packer {
       version = "~> 1.3"
     }
   }
-}
-
-variable "region" {
-  type        = string
-  default     = "us-east-2"
-  description = "Región donde se construye la imagen."
-}
-
-variable "copiar_a" {
-  type        = list(string)
-  default     = ["us-east-1", "us-west-2"]
-  description = "Otras regiones donde se copia la imagen (las de los tenants)."
 }
 
 variable "tipo" {
@@ -44,8 +36,6 @@ locals {
 }
 
 source "amazon-ebs" "tenant" {
-  region        = var.region
-  ami_regions   = var.copiar_a
   instance_type = var.tipo
   ssh_username  = "ec2-user"
 
@@ -94,7 +84,19 @@ source "amazon-ebs" "tenant" {
 }
 
 build {
-  sources = ["source.amazon-ebs.tenant"]
+  # Un build por región de los tenants, en paralelo (cada región tiene su propio límite de vCPU).
+  source "amazon-ebs.tenant" {
+    name   = "ohio"
+    region = "us-east-2"
+  }
+  source "amazon-ebs.tenant" {
+    name   = "virginia"
+    region = "us-east-1"
+  }
+  source "amazon-ebs.tenant" {
+    name   = "oregon"
+    region = "us-west-2"
+  }
 
   provisioner "shell" {
     inline = ["mkdir -p /tmp/imagen/vars"]

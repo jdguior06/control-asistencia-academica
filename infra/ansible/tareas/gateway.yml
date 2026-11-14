@@ -107,7 +107,7 @@
   vars:
     # utepsa.conf -> utepsa
     gateway_slugs: "{{ gateway_tenants.files | map(attribute='path') | map('basename') | map('splitext') | map('first') | sort }}"
-  notify: Reiniciar portal
+  # Sin reiniciar el portal: con PLATFORM_TENANT_DOMAIN ya acepta a todos los tenants.
 
 - name: Probar la configuración de Nginx
   ansible.builtin.command: nginx -t

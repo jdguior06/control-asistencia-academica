@@ -27,3 +27,13 @@ URL pública y su clave de vinculación. La URL debe estar habilitada en
 Para desarrollo, `PLATFORM_MAIL_TRANSPORT=preview` permite copiar el enlace desde
 el panel. Para correo real, configura las variables SMTP del ejemplo. Consulta
 también la [guía de la API](server/README.md).
+
+## Crear instituciones con su infraestructura
+
+En **Instituciones → Crear institución** el operador elige el plan, la región y el
+motor (Terraform, OpenTofu, Pulumi o CloudFormation). La API guarda un trabajo en
+`platform_jobs` y el worker (`npm run worker`, servicio `asistencia-worker` en el
+servidor) ejecuta `infra/scripts/aprovisionar.sh`: escaneo de seguridad, plan y
+políticas, creación de la red y los servidores, Ansible y verificación. El panel
+muestra cada paso y el registro en vivo, y al terminar invita al administrador.
+Ver `infra/LEEME.md`.

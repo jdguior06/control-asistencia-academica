@@ -43,7 +43,10 @@ infra/
 │   ├── pulumi/             el mismo tenant con Pulumi (TypeScript)
 │   └── cloudformation/     el mismo tenant con CloudFormation (tenant.ps1 lo crea y lo borra)
 ├── packer/                 imagen (AMI) de los tenants con todo preinstalado
-├── scripts/inventario.py   JSON del tenant -> inventario de Ansible
+├── scripts/
+│   ├── inventario.py       JSON del tenant -> inventario de Ansible
+│   └── aprovisionar.sh     crea o borra un tenant completo (lo usa el worker del portal)
+├── politicas/              reglas del equipo (Conftest) sobre el plan de cada motor
 ├── ansible/
 │   ├── plataforma.yml      configura vm-plataforma y vm-monitoreo
 │   ├── tenant.yml          configura un tenant completo + su ruta en el gateway
@@ -141,7 +144,7 @@ winget install Hashicorp.Packer      # una vez
 cd D:\Diplomado-2026\control-asistencia-academica\infra\packer
 packer init .
 packer validate .
-packer build .                       # 15-20 minutos; la copia a us-east-1 y us-west-2
+packer build .                       # 15-20 min: construye la imagen en las 3 regiones a la vez
 ```
 
 | | Sin imagen | Con imagen |
@@ -180,8 +183,9 @@ terraform apply -var slug=utepsa -var numero=1 -var region=us-east-2 -var plan=b
 
 ### 4b. El mismo tenant con Pulumi (PowerShell)
 
-Una vez por PC: `npm install` en `infra\tenant\pulumi`. Usa la misma frase de cifrado de
-la práctica de Pulumi. Cada tenant es un stack, y **el nombre del stack es el slug**.
+Una vez por PC: `npm install` en `infra\tenant\pulumi`. Usa como frase de cifrado la
+misma de `vault_pulumi_passphrase` (la del worker), así el portal también puede manejar
+ese stack. Cada tenant es un stack, y **el nombre del stack es el slug**.
 
 ```powershell
 cd D:\Diplomado-2026\control-asistencia-academica\infra\tenant\pulumi
@@ -267,8 +271,70 @@ En us-east-2 quedan 4 VPC (por defecto, plataforma y 2 tenants): no hace falta p
 | Monitoreo automático | Prometheus → Status → Targets | aparecen los tenants con su etiqueta |
 | Netdata de un servidor | `ssh -L 19999:10.1.1.10:19999 ec2-user@<ip plataforma>` y abrir `http://localhost:19999` | panel en vivo |
 
+---
+
+# Crear tenants desde el portal (etapa 5)
+
+```
+ navegador ──► portal (asistencia-portal) ──► base del portal: platform_jobs
+                                                   │
+                       worker (asistencia-worker, usuario iac) toma el trabajo
+                                                   │
+                       infra/scripts/aprovisionar.sh crear --slug ... --motor ...
+                         1 Validar
+                         2 Escaneo: TFLint / cfn-lint, Checkov, Trivy, Gitleaks
+                         3 Plan y políticas: Conftest (politicas/), Infracost
+                         4 Crear: Terraform / OpenTofu / Pulumi / CloudFormation
+                         5 Ansible: tenant.yml (app, agentes, ruta en el gateway)
+                         6 Verificar: http://<slug>.<ip>.nip.io/api/health
+                                                   │
+                       el worker vincula la instalación e invita al administrador
+```
+
+- El panel muestra cada paso y el **registro en vivo** (Instituciones → la institución → Infraestructura).
+- Las **advertencias** de los escáneres quedan en el log y no detienen nada. Sí
+  detienen la creación: un **secreto** encontrado por Gitleaks o una regla `deny` de
+  `politicas/` (tipo de servidor fuera del plan gratuito, un plan que borra recursos).
+- Los hallazgos de Checkov **aceptados por diseño** están marcados en el código con
+  `#checkov:skip=...` y su motivo (se ven como "aceptadas por diseño").
+- Los trabajos se ejecutan **de a uno**. Si el worker se reinicia a mitad, el trabajo
+  queda como fallido y se puede reintentar.
+- El portal acepta los tenants por **HTTP** (`PLATFORM_ALLOW_HTTP_TENANTS=true`) porque
+  nip.io no tiene certificados. Con HTTPS real (Let's Encrypt) se quitaría esa variable.
+- Eliminar: botón **Eliminar infraestructura** (pide escribir el identificador). Borra la
+  red y los servidores, quita la ruta del gateway y archiva sus contraseñas en
+  `generado/borrados/` del servidor.
+
+## Preparar (una vez)
+
+1. En `group_vars/all/vault.yml` (`ansible-vault edit`), agrega:
+   ```yaml
+   vault_pulumi_passphrase: UnaFraseSoloLetrasYNumeros   # 12+, sin símbolos
+   vault_infracost_api_key: ""                            # opcional (infracost.io, gratis)
+   ```
+2. `git push` (el servidor clona tu rama `plataforma`).
+3. WSL: `ansible-playbook -i inventarios/plataforma.ini plataforma.yml`. Instala en
+   vm-plataforma las herramientas (motores, Ansible y escáneres) y el servicio
+   `asistencia-worker`, con su propia copia del repo en `/opt/iac/repo`.
+
+## Usar
+
+Portal → **Instituciones → Crear institución** → nombre, identificador, plan,
+región, motor → **Crear institución**. Se abre su ficha con los pasos en vivo
+(15-20 minutos sin imagen de Packer; menos con imagen). Al terminar aparecen la URL y
+el enlace de **invitación** del administrador (vista previa: no se envía correo).
+
+## Revisar en el servidor
+
+```bash
+ssh ec2-user@<ip plataforma>
+sudo journalctl -u asistencia-worker -f      # lo que hace el worker
+sudo -iu iac                                  # mismo entorno que el worker (en infra/)
+bash scripts/aprovisionar.sh crear --slug prueba --motor terraform --region us-east-2 --plan basico --numero 9
+ls generado/tenants/<slug>/                   # checkov.json, trivy.json, plan.json, contraseñas...
+```
+
 ## Pendiente (siguientes etapas)
 
-- **Etapa 5:** el portal crea tenants (worker). El portal solo vincula tenants con
-  **HTTPS** (`invitations.js`): hay que decidir entre certificados de Let's Encrypt
-  en el gateway o permitir HTTP para la demo con una variable.
+- **Etapa 6:** suspender y reanudar tenants; monitoreo y auditoría del portal con datos reales.
+- **Trazas** de la app (OpenTelemetry → Tempo → Grafana).

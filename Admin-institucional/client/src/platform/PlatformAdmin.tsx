@@ -10,12 +10,13 @@ import {
   type InvitationStatus, type Plan, type PlatformUser, type TenantConfiguration, type TenantRequest,
 } from './api'
 import CreatePlanDialog from './CreatePlanDialog'
-import CreateTenantDialog, { type TenantPreview } from './CreateTenantDialog'
+import CreateTenantDialog from './CreateTenantDialog'
 import PlatformAudit from './PlatformAudit'
 import PlatformHome from './PlatformHome'
 import PlatformMonitoring from './PlatformMonitoring'
 import PlatformSettings from './PlatformSettings'
-import { engines, environments, optionLabel, providers, regions, slugFromName, type Provider } from './tenant-options'
+import Provisioning from './Provisioning'
+import { engines, environments, optionLabel, regions, slugFromName, type Provider } from './tenant-options'
 import './admin.css'
 
 type Filter = 'all' | 'pending' | 'registered'
@@ -240,11 +241,12 @@ function Installation({ requestId, tenant, onUpdated, onSessionExpired }: {
   </section>
 }
 
-function RequestDetail({ request, plan, onRegistered, onInvitationUpdated, onSessionExpired }: {
+function RequestDetail({ request, plan, onRegistered, onInvitationUpdated, onReload, onSessionExpired }: {
   request: TenantRequest
   plan: Plan | undefined
   onRegistered: (request: TenantRequest) => void
   onInvitationUpdated: (request: TenantRequest) => void
+  onReload: () => void
   onSessionExpired: () => void
 }) {
   const [slug, setSlug] = useState(() => slugFromName(request.institutionName))
@@ -253,6 +255,7 @@ function RequestDetail({ request, plan, onRegistered, onInvitationUpdated, onSes
   const [engine, setEngine] = useState(engines[0].value)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [provisioning, setProvisioning] = useState(false)
   const provider = regions.find(option => option.value === (request.tenant?.region ?? region))?.provider
 
   async function register(event: FormEvent<HTMLFormElement>) {
@@ -297,15 +300,16 @@ function RequestDetail({ request, plan, onRegistered, onInvitationUpdated, onSes
             <div><dt>Entorno</dt><dd>{optionLabel(environments, request.tenant.environment)}</dd></div>
             <div><dt>Motor</dt><dd>{optionLabel(engines, request.tenant.engine)}</dd></div>
           </dl>}
-          {request.tenant && <Installation requestId={request.id} tenant={request.tenant} onUpdated={onInvitationUpdated} onSessionExpired={onSessionExpired} />}
+          {request.tenant && <Provisioning requestId={request.id} tenant={request.tenant} onFinished={onReload} onActiveChange={setProvisioning} onSessionExpired={onSessionExpired} />}
+          {request.tenant && !provisioning && <Installation requestId={request.id} tenant={request.tenant} onUpdated={onInvitationUpdated} onSessionExpired={onSessionExpired} />}
         </section> : <form className="pa-register-form" onSubmit={register} aria-labelledby="pa-register-title">
           <h3 id="pa-register-title">Configurar institución</h3>
           <label htmlFor="pa-slug">Identificador único</label>
-          <input id="pa-slug" aria-describedby="pa-slug-help" value={slug} onChange={event => setSlug(event.target.value.toLowerCase())} pattern="[a-z0-9]+(?:\x2d[a-z0-9]+)*" minLength={3} maxLength={63} autoComplete="off" required />
-          <small id="pa-slug-help">De 3 a 63 caracteres. Usa minúsculas, números y guiones entre palabras.</small>
+          <input id="pa-slug" aria-describedby="pa-slug-help" value={slug} onChange={event => setSlug(event.target.value.toLowerCase())} pattern="[a-z0-9]+(?:\x2d[a-z0-9]+)*" minLength={3} maxLength={30} autoComplete="off" required />
+          <small id="pa-slug-help">De 3 a 30 caracteres. Usa minúsculas, números y guiones entre palabras.</small>
           <div className="pa-form-grid">
             <div><label htmlFor="pa-region">Región</label><select id="pa-region" value={region} onChange={event => setRegion(event.target.value)}>
-              {regions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+              {regions.map(option => <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>)}
             </select></div>
             <div><label htmlFor="pa-environment">Entorno</label><select id="pa-environment" value={environment} onChange={event => setEnvironment(event.target.value)}>
               {environments.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -329,47 +333,7 @@ function RequestDetail({ request, plan, onRegistered, onInvitationUpdated, onSes
           {plan && <PlanResourceRows plan={plan} />}
         </dl>
         {plan && <PlanInstances plan={plan} provider={provider} />}
-        <p><Server size={16} /> El registro guarda la configuración para el aprovisionamiento.</p>
-      </aside>
-    </div>
-  </article>
-}
-
-function TenantPreviewDetail({ draft, plan }: { draft: TenantPreview; plan: Plan | undefined }) {
-  return <article className="pa-card pa-detail" aria-labelledby="pa-preview-title">
-    <header className="pa-detail-head">
-      <span className="pa-icon-tile"><Building2 size={23} aria-hidden="true" /></span>
-      <div><h2 id="pa-preview-title">{draft.institutionName}</h2></div>
-      <span className="pa-status pa-status-preview"><Eye size={13} aria-hidden="true" /> Vista previa</span>
-    </header>
-    <div className="pa-detail-grid">
-      <div className="pa-detail-main">
-        <section aria-labelledby="pa-preview-contact" className="pa-contact">
-          <h3 id="pa-preview-contact">Contacto de la institución</h3>
-          <dl>
-            <div><dt>Administrador</dt><dd>{draft.adminName}</dd></div>
-            <div><dt>Correo electrónico</dt><dd>{draft.adminEmail}</dd></div>
-          </dl>
-        </section>
-        <section className="pa-registered" aria-labelledby="pa-preview-config">
-          <h3 id="pa-preview-config">Configuración prevista</h3>
-          <dl>
-            <div><dt>Identificador</dt><dd>{draft.slug}</dd></div>
-            <div><dt>Proveedor</dt><dd>{optionLabel(providers, draft.provider)}</dd></div>
-            <div><dt>Región</dt><dd>{optionLabel(regions, draft.region)}</dd></div>
-            <div><dt>Entorno</dt><dd>{optionLabel(environments, draft.environment)}</dd></div>
-            <div><dt>Motor</dt><dd>{optionLabel(engines, draft.engine)}</dd></div>
-          </dl>
-        </section>
-        <p className="pa-preview-note">Configuración temporal para revisar el despliegue antes de registrar la institución.</p>
-      </div>
-      <aside className="pa-summary">
-        <h3>Resumen del plan</h3>
-        <dl>
-          <div><dt>Plan elegido</dt><dd><span className="pa-plan-tag">{plan?.name ?? draft.planId}</span></dd></div>
-          {plan && <PlanResourceRows plan={plan} />}
-        </dl>
-        {plan && <PlanInstances plan={plan} provider={draft.provider} />}
+        <p><Server size={16} /> Después del registro, la plataforma crea la infraestructura con el motor elegido.</p>
       </aside>
     </div>
   </article>
@@ -394,7 +358,6 @@ function Console({ user, onLogout }: { user: PlatformUser; onLogout: () => void 
   const [menuOpen, setMenuOpen] = useState(false)
   const [createPlanOpen, setCreatePlanOpen] = useState(false)
   const [createTenantOpen, setCreateTenantOpen] = useState(false)
-  const [tenantPreviews, setTenantPreviews] = useState<TenantPreview[]>([])
 
   useEffect(() => {
     let active = true
@@ -426,14 +389,8 @@ function Console({ user, onLogout }: { user: PlatformUser; onLogout: () => void 
       return matchesStatus && searchable.includes(search)
     })
   }, [requests, query, view, filter])
-  const visiblePreviews = view === 'tenants' ? tenantPreviews.filter(draft =>
-    [draft.institutionName, draft.adminName, draft.adminEmail, draft.slug].join(' ').toLocaleLowerCase('es')
-      .includes(query.trim().toLocaleLowerCase('es')),
-  ) : []
-  const selectedPreview = visiblePreviews.find(draft => `preview:${draft.slug}` === selectedId)
-    ?? (visibleRequests.length === 0 ? visiblePreviews[0] : undefined)
-  const selected = selectedPreview ? undefined : visibleRequests.find(request => request.id === selectedId) ?? visibleRequests[0]
-  const selectedPlan = plans.find(plan => plan.id === (selectedPreview ?? selected)?.planId)
+  const selected = visibleRequests.find(request => request.id === selectedId) ?? visibleRequests[0]
+  const selectedPlan = plans.find(plan => plan.id === selected?.planId)
   const activeNav = navigation.find(item => item.id === view)!
   const DemoView = demoViews[view]
   const initials = user.name.trim().split(/\s+/).slice(0, 2).map(name => name[0]).join('').toUpperCase()
@@ -471,14 +428,21 @@ function Console({ user, onLogout }: { user: PlatformUser; onLogout: () => void 
     setNotice(`«${plan.name}» ya está disponible en el catálogo.`)
   }
 
-  function onTenantPreview(draft: TenantPreview) {
-    setTenantPreviews(previous => [draft, ...previous])
+  function onTenantCreated(request: TenantRequest) {
+    setRequests(previous => [request, ...previous.filter(item => item.id !== request.id)])
     setCreateTenantOpen(false)
     restoreDialogFocus.current = null
     changeView('tenants')
-    setSelectedId(`preview:${draft.slug}`)
-    setNotice(`Vista previa de «${draft.institutionName}» creada.`)
+    setSelectedId(request.id)
+    setNotice(`«${request.institutionName}» se registró: su infraestructura se está creando.`)
   }
+
+  // Recarga silenciosa (sin el aviso de "Cargando"), por ejemplo al terminar un trabajo.
+  const reloadRequests = useCallback(() => {
+    api<{ requests: TenantRequest[] }>('/api/platform/requests')
+      .then(result => setRequests(result.requests))
+      .catch(cause => { if (cause instanceof ApiError && cause.status === 401) onLogout() })
+  }, [onLogout])
 
   function openTenantDialog() {
     restoreDialogFocus.current = menuOpen ? menuTrigger.current : null
@@ -593,29 +557,16 @@ function Console({ user, onLogout }: { user: PlatformUser; onLogout: () => void 
                     <Status value={request.status} />
                   </button>
                 </li>)}
-              </ul> : visiblePreviews.length === 0 && <div className="pa-empty"><ClipboardList size={24} /><p>{query || (view === 'requests' && filter !== 'all') ? 'No hay resultados para los filtros.' : view === 'tenants' ? 'Todavía no hay instituciones registradas.' : 'Todavía no hay solicitudes.'}</p></div>}
-              {visiblePreviews.length > 0 && <div className="pa-preview-list">
-                <h3 id="pa-preview-list-title">Vistas previas</h3>
-                <ul aria-labelledby="pa-preview-list-title">
-                  {visiblePreviews.map(draft => <li key={draft.slug}>
-                    <button type="button" aria-pressed={selectedPreview?.slug === draft.slug} onClick={() => setSelectedId(`preview:${draft.slug}`)}>
-                      <span className="pa-row-text"><strong>{draft.institutionName}</strong><small>{plans.find(plan => plan.id === draft.planId)?.name ?? draft.planId} · {draft.slug}</small></span>
-                      <ChevronRight size={16} aria-hidden="true" />
-                      <span className="pa-status pa-status-preview">Vista previa</span>
-                    </button>
-                  </li>)}
-                </ul>
-              </div>}
+              </ul> : <div className="pa-empty"><ClipboardList size={24} /><p>{query || (view === 'requests' && filter !== 'all') ? 'No hay resultados para los filtros.' : view === 'tenants' ? 'Todavía no hay instituciones registradas.' : 'Todavía no hay solicitudes.'}</p></div>}
             </section>
-            {selectedPreview ? <TenantPreviewDetail draft={selectedPreview} plan={selectedPlan} />
-              : selected ? <RequestDetail key={selected.id} request={selected} plan={selectedPlan} onRegistered={onRegistered} onInvitationUpdated={onInvitationUpdated} onSessionExpired={onLogout} /> : <section className="pa-card pa-empty pa-empty-detail"><span className="pa-icon-tile"><Building2 size={24} /></span><h2>Detalles de la institución</h2><p>Selecciona una institución para ver su información.</p></section>}
+            {selected ? <RequestDetail key={selected.id} request={selected} plan={selectedPlan} onRegistered={onRegistered} onInvitationUpdated={onInvitationUpdated} onReload={reloadRequests} onSessionExpired={onLogout} /> : <section className="pa-card pa-empty pa-empty-detail"><span className="pa-icon-tile"><Building2 size={24} /></span><h2>Detalles de la institución</h2><p>Selecciona una institución para ver su información.</p></section>}
           </div>
         </>}
       </main>
     </div>
     {createPlanOpen && <CreatePlanDialog onClose={() => setCreatePlanOpen(false)} onCreated={onPlanCreated} onSessionExpired={onLogout} />}
-    {createTenantOpen && <CreateTenantDialog plans={plans} onClose={closeTenantDialog} onPreview={onTenantPreview}
-      usedSlugs={[...requests.flatMap(request => request.tenant ? [request.tenant.slug] : []), ...tenantPreviews.map(draft => draft.slug)]} />}
+    {createTenantOpen && <CreateTenantDialog plans={plans} onClose={closeTenantDialog} onCreated={onTenantCreated} onSessionExpired={onLogout}
+      usedSlugs={requests.flatMap(request => request.tenant ? [request.tenant.slug] : [])} />}
   </div>
 }
 

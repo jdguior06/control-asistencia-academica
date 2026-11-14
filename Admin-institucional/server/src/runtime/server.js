@@ -1,6 +1,7 @@
 const express = require('express');
 const { createPool, migrate, transaction } = require('./db');
 const { InvitationError, allowedTenantOrigin, deliverInvitation, issueTenantInvitation, tenantIsActivated } = require('./invitations');
+const { ProvisioningError, createInstitution, latestJob, startJob } = require('./provisioning');
 const {
   bootstrapAdmin, configuredAdmin, closeSession, limitLogins, newToken,
   openSession, sessionUser, tokenHash, tokenPattern, validEmail,
@@ -356,10 +357,33 @@ function createApp(pool, platformOnly) {
     response.json(await inviteTenant(pool, request.params.id, request.body));
   });
 
+  // Aprovisionamiento (lo ejecuta el worker: src/worker.js).
+  platform.post('/tenants', async (request, response) => {
+    const { requestId, job } = await createInstitution(pool, request.body);
+    const { rows: [row] } = await pool.query(`${requestSelect} WHERE r.id = $1`, [requestId]);
+    response.status(201).json({ request: serializeRequest(row), job });
+  });
+
+  platform.get('/requests/:id/job', async (request, response) => {
+    requireRequestId(request.params.id);
+    response.json({ job: await latestJob(pool, request.params.id) });
+  });
+
+  platform.post('/requests/:id/provision', async (request, response) => {
+    requireRequestId(request.params.id);
+    response.status(201).json({ job: await startJob(pool, request.params.id, 'create') });
+  });
+
+  platform.post('/requests/:id/deprovision', async (request, response) => {
+    requireRequestId(request.params.id);
+    const confirmation = typeof request.body?.confirm === 'string' ? request.body.confirm.trim() : '';
+    response.status(201).json({ job: await startJob(pool, request.params.id, 'delete', confirmation) });
+  });
+
   app.use('/api/platform', platform);
   app.use((_request, _response, next) => next(new HttpError(404, 'Ruta no encontrada.')));
   app.use((error, _request, response, _next) => {
-    if (error instanceof HttpError || error instanceof InvitationError) {
+    if (error instanceof HttpError || error instanceof InvitationError || error instanceof ProvisioningError) {
       return response.status(error.status).json({ message: error.message });
     }
     if (error.type === 'entity.parse.failed') {
@@ -389,4 +413,4 @@ async function openPlatform(connectionString, platformOnly) {
   }
 }
 
-module.exports = { openPlatform };
+module.exports = { openPlatform, inviteTenant };

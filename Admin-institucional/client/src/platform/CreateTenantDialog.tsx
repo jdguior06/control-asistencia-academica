@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { ArrowRight, Building2, ChevronRight, CircleAlert, Eye, X } from 'lucide-react'
-import { formatNumber, type Plan } from './api'
+import { ArrowRight, Building2, ChevronRight, CircleAlert, Rocket, X } from 'lucide-react'
+import { ApiError, api, errorMessage, formatNumber, type Plan, type ProvisioningJob, type TenantRequest } from './api'
 import { engines, environments, optionLabel, providers, regions, slugFromName, type Provider } from './tenant-options'
 import './create-plan.css'
 
@@ -20,10 +20,12 @@ type Props = {
   plans: Plan[]
   usedSlugs: string[]
   onClose: () => void
-  onPreview: (draft: TenantPreview) => void
+  onCreated: (request: TenantRequest) => void
+  onSessionExpired: () => void
 }
 
-export default function CreateTenantDialog({ plans, usedSlugs, onClose, onPreview }: Props) {
+// Crea la institución y encola la creación de su infraestructura (la ejecuta el worker).
+export default function CreateTenantDialog({ plans, usedSlugs, onClose, onCreated, onSessionExpired }: Props) {
   const dialogRef = useRef<HTMLDialogElement>(null)
   const nameRef = useRef<HTMLInputElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -35,6 +37,7 @@ export default function CreateTenantDialog({ plans, usedSlugs, onClose, onPrevie
   const [engine, setEngine] = useState(engines[0].value)
   const [planId, setPlanId] = useState('')
   const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
   const [review, setReview] = useState<TenantPreview>()
   const plan = plans.find(item => item.id === planId)
   const regionChoices = regions.filter(option => option.provider === provider)
@@ -66,11 +69,27 @@ export default function CreateTenantDialog({ plans, usedSlugs, onClose, onPrevie
     if (nextProvider === 'azure' && engine === 'cloudformation') setEngine(engines[0].value)
   }
 
+  async function create(draft: TenantPreview) {
+    setBusy(true)
+    setError('')
+    try {
+      const result = await api<{ request: TenantRequest; job: ProvisioningJob }>('/api/platform/tenants', {
+        method: 'POST', body: JSON.stringify(draft),
+      })
+      dialogRef.current?.close()
+      onCreated(result.request)
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 401) onSessionExpired()
+      else setError(errorMessage(cause, 'No se pudo crear la institución. Intenta de nuevo.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (review) {
-      dialogRef.current?.close()
-      onPreview(review)
+      void create(review)
       return
     }
     const data = new FormData(event.currentTarget)
@@ -113,10 +132,10 @@ export default function CreateTenantDialog({ plans, usedSlugs, onClose, onPrevie
     <form className="pcd-form" onSubmit={submit}>
       <header className="pcd-header">
         <span className="pcd-header-icon"><Building2 size={23} aria-hidden="true" /></span>
-        <div><h2 id="pct-title">Crear institución</h2><p id="pct-description">Prepara una vista previa del espacio de la institución.</p></div>
+        <div><h2 id="pct-title">Crear institución</h2><p id="pct-description">Registra la institución y crea su infraestructura en la nube.</p></div>
         <button type="button" className="pcd-close" onClick={dismiss} aria-label="Cerrar formulario"><X size={20} /></button>
       </header>
-      <ol className="pct-steps" aria-label="Pasos para crear la vista previa">
+      <ol className="pct-steps" aria-label="Pasos para crear la institución">
         <li aria-current={review ? undefined : 'step'}>Datos y configuración</li>
         <li aria-current={review ? 'step' : undefined}><ChevronRight size={14} aria-hidden="true" /> Revisión</li>
       </ol>
@@ -132,9 +151,9 @@ export default function CreateTenantDialog({ plans, usedSlugs, onClose, onPrevie
               <label className="pcd-field"><span>Identificador único</span>
                 <input name="slug" value={customSlug ?? slugFromName(institutionName)}
                   onChange={event => setCustomSlug(event.target.value.toLowerCase())}
-                  aria-describedby="pct-slug-help" pattern="[a-z0-9]+(?:\x2d[a-z0-9]+)*" minLength={3} maxLength={63} autoComplete="off" required />
+                  aria-describedby="pct-slug-help" pattern="[a-z0-9]+(?:\x2d[a-z0-9]+)*" minLength={3} maxLength={30} autoComplete="off" required />
               </label>
-              <p className="pct-help pcd-full" id="pct-slug-help">El identificador admite minúsculas, números y guiones entre palabras.</p>
+              <p className="pct-help pcd-full" id="pct-slug-help">De 3 a 30 caracteres: minúsculas, números y guiones entre palabras. Será la dirección de la institución (identificador.ip.nip.io).</p>
               <label className="pcd-field"><span>Nombre del administrador</span>
                 <input name="adminName" autoComplete="name" minLength={2} maxLength={120} required />
               </label>
@@ -163,12 +182,12 @@ export default function CreateTenantDialog({ plans, usedSlugs, onClose, onPrevie
             <div className="pct-fields">
               <label className="pcd-field"><span>Proveedor</span>
                 <select value={provider} onChange={event => changeProvider(event.target.value as Provider)}>
-                  {providers.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  {providers.map(option => <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>)}
                 </select>
               </label>
               <label className="pcd-field"><span>Región</span>
                 <select value={region} onChange={event => setRegion(event.target.value)}>
-                  {regionChoices.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  {regionChoices.map(option => <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>)}
                 </select>
               </label>
               <label className="pcd-field"><span>Entorno</span>
@@ -205,11 +224,11 @@ export default function CreateTenantDialog({ plans, usedSlugs, onClose, onPrevie
       <footer className="pcd-footer">
         {error && <div className="pcd-error" role="alert"><CircleAlert size={17} aria-hidden="true" /><span>{error}</span></div>}
         <div className="pcd-footer-row">
-          <p>La vista previa se conserva mientras mantengas abierto el panel.</p>
+          <p>{review ? 'Al confirmar se crea la infraestructura: el avance se ve en la ficha de la institución.' : 'Azure aparece como opción futura: por ahora la infraestructura se crea en AWS.'}</p>
           <div className="pcd-actions">
             {review ? <>
-              <button type="button" className="pcd-secondary" onClick={backToDetails}>Volver a los datos</button>
-              <button type="submit" className="pcd-primary"><Eye size={17} aria-hidden="true" /> Crear vista previa</button>
+              <button type="button" className="pcd-secondary" disabled={busy} onClick={backToDetails}>Volver a los datos</button>
+              <button type="submit" className="pcd-primary" disabled={busy}><Rocket size={17} aria-hidden="true" /> {busy ? 'Creando…' : 'Crear institución'}</button>
             </> : <>
               <button type="button" className="pcd-secondary" onClick={dismiss}>Cancelar</button>
               <button type="submit" className="pcd-primary" disabled={plans.length === 0}>Revisar institución <ArrowRight size={17} aria-hidden="true" /></button>

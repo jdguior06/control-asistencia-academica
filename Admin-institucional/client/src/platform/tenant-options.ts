@@ -1,15 +1,17 @@
 export type Provider = 'aws' | 'azure'
 
+// Azure se muestra, pero todavía no se puede elegir: la infraestructura (infra/tenant) solo crea en AWS.
 export const providers = [
-  { value: 'aws', label: 'AWS' },
-  { value: 'azure', label: 'Azure' },
-] satisfies { value: Provider; label: string }[]
+  { value: 'aws', label: 'AWS', disabled: false },
+  { value: 'azure', label: 'Azure (próximamente)', disabled: true },
+] satisfies { value: Provider; label: string; disabled: boolean }[]
 
 export const regions = [
-  { value: 'us-east-1', label: 'Virginia del Norte · AWS', provider: 'aws' },
-  { value: 'us-west-2', label: 'Oregón · AWS', provider: 'aws' },
-  { value: 'eastus', label: 'Este de EE. UU. · Azure', provider: 'azure' },
-] satisfies { value: string; label: string; provider: Provider }[]
+  { value: 'us-east-2', label: 'Ohio · AWS', provider: 'aws', disabled: false },
+  { value: 'us-east-1', label: 'Virginia del Norte · AWS', provider: 'aws', disabled: false },
+  { value: 'us-west-2', label: 'Oregón · AWS', provider: 'aws', disabled: false },
+  { value: 'eastus', label: 'Este de EE. UU. · Azure (próximamente)', provider: 'azure', disabled: true },
+] satisfies { value: string; label: string; provider: Provider; disabled: boolean }[]
 
 export const environments = [
   { value: 'production', label: 'Producción' },
@@ -25,7 +27,7 @@ export const engines = [
 
 export function slugFromName(name: string) {
   return name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63).replace(/-+$/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30).replace(/-+$/g, '')
 }
 
 export function optionLabel(options: { value: string; label: string }[], value: string) {

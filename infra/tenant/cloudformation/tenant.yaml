@@ -231,6 +231,7 @@ Resources:
     Properties:
       ImageId: !If [HayImagenPropia, !Ref ImagenPropia, !Ref Imagen]
       InstanceType: !If [OtroFrontend, !Ref TipoFrontend, !FindInMap [Planes, !Ref Plan, Frontend]]
+      EbsOptimized: true
       SubnetId: !Ref Subred
       PrivateIpAddress: !Sub "10.${Numero}.1.20"
       SecurityGroupIds: [!Ref SgFrontend]
@@ -256,6 +257,7 @@ Resources:
     Properties:
       ImageId: !If [HayImagenPropia, !Ref ImagenPropia, !Ref Imagen]
       InstanceType: !If [OtroBackend, !Ref TipoBackend, !FindInMap [Planes, !Ref Plan, Backend]]
+      EbsOptimized: true
       SubnetId: !Ref Subred
       PrivateIpAddress: !Sub "10.${Numero}.1.10"
       SecurityGroupIds: [!Ref SgBackend]
@@ -281,6 +283,7 @@ Resources:
     Properties:
       ImageId: !If [HayImagenPropia, !Ref ImagenPropia, !Ref Imagen]
       InstanceType: !If [OtroBase, !Ref TipoBase, !FindInMap [Planes, !Ref Plan, Base]]
+      EbsOptimized: true
       SubnetId: !Ref Subred
       PrivateIpAddress: !Sub "10.${Numero}.1.30"
       SecurityGroupIds: [!Ref SgBase]

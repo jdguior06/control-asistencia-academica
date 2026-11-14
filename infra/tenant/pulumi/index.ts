@@ -246,6 +246,7 @@ for (const rol of roles) {
   servidores[rol] = new aws.ec2.Instance(rol, {
     ami: imagen,
     instanceType: tamanos[rol].tipo,
+    ebsOptimized: true,
     subnetId: subnet.id,
     privateIp: `10.${numero}.1.${ipFinal[rol]}`,
     vpcSecurityGroupIds: [grupos[rol].id],

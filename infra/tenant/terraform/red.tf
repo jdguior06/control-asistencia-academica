@@ -5,10 +5,13 @@
 #   tenant A ──✗──► tenant B         el peering no es transitivo: aislados entre sí
 
 data "aws_availability_zones" "disponibles" {
+  #checkov:skip=CKV_AWS_394:Solo se usa la primera zona; que AWS agregue zonas no cambia nada
   state = "available"
 }
 
 resource "aws_vpc" "tenant" {
+  #checkov:skip=CKV2_AWS_11:Flow logs tienen costo; el tráfico se observa con Prometheus y Netdata
+  #checkov:skip=CKV2_AWS_12:El grupo por defecto no se usa: cada servidor tiene su propio grupo
   cidr_block           = local.cidr
   enable_dns_support   = true
   enable_dns_hostnames = true
@@ -32,6 +35,7 @@ resource "aws_internet_gateway" "tenant" {
 }
 
 resource "aws_subnet" "tenant" {
+  #checkov:skip=CKV_AWS_130:IP pública solo para SALIR a internet (sin NAT, que cuesta); los firewalls no dejan entrar
   vpc_id                  = aws_vpc.tenant.id
   cidr_block              = local.subred
   availability_zone       = data.aws_availability_zones.disponibles.names[0]
@@ -65,6 +69,7 @@ resource "aws_vpc_peering_connection_accepter" "plataforma" {
 # ---------------------------------------------------------------- rutas
 
 resource "aws_route_table" "tenant" {
+  #checkov:skip=CKV2_AWS_44:La salida 0.0.0.0/0 va al internet gateway; por el peering solo va 10.0.0.0/16
   vpc_id = aws_vpc.tenant.id
 
   route {

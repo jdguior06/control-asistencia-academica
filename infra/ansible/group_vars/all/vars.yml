@@ -21,6 +21,11 @@ portal_admin_email: operador@example.com
 portal_db_password: "{{ vault_portal_db_password }}"
 portal_admin_password: "{{ vault_portal_admin_password }}"
 
+# ---------------------------------------------------------------- Herramientas del worker (vm-plataforma)
+terraform_version: "1.15.4"
+tofu_version: "1.11.6"
+pulumi_version: "3.276.0"
+
 # ---------------------------------------------------------------- App de cada tenant
 app_proyecto: admin-docente-alumno
 app_server_dir: "{{ app_dir }}/{{ app_proyecto }}/server"

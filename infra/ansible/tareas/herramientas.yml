@@ -1,0 +1,190 @@
+# herramientas: lo que necesita el worker en vm-plataforma para crear tenants:
+# los 4 motores (Terraform, OpenTofu, Pulumi, CloudFormation con el AWS CLI),
+# Ansible y los escáneres (TFLint, Checkov, Trivy, Gitleaks, Conftest, Infracost, cfn-lint).
+#
+# Cada programa queda en /opt/herramientas/<programa>-<versión> y un enlace en
+# /usr/local/bin apunta a la versión en uso.
+
+- name: Paquetes del sistema
+  ansible.builtin.dnf:
+    name: [unzip, jq, python3.11, python3.11-pip, awscli-2]
+    state: present
+
+- name: Carpeta de herramientas
+  ansible.builtin.file:
+    path: /opt/herramientas
+    state: directory
+    mode: "0755"
+
+# ---------------------------------------------------------------- motores con versión fija
+- name: Carpeta de cada versión
+  ansible.builtin.file:
+    path: "/opt/herramientas/{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "terraform-{{ terraform_version }}"
+    - "tofu-{{ tofu_version }}"
+    - "pulumi-{{ pulumi_version }}"
+
+- name: Descargar Terraform, OpenTofu y Pulumi
+  ansible.builtin.unarchive:
+    src: "{{ item.url }}"
+    dest: "/opt/herramientas/{{ item.carpeta }}"
+    remote_src: true
+    creates: "/opt/herramientas/{{ item.carpeta }}/{{ item.binario }}"
+  loop:
+    - carpeta: "terraform-{{ terraform_version }}"
+      binario: terraform
+      url: "https://releases.hashicorp.com/terraform/{{ terraform_version }}/terraform_{{ terraform_version }}_linux_amd64.zip"
+    - carpeta: "tofu-{{ tofu_version }}"
+      binario: tofu
+      url: "https://github.com/opentofu/opentofu/releases/download/v{{ tofu_version }}/tofu_{{ tofu_version }}_linux_amd64.zip"
+    - carpeta: "pulumi-{{ pulumi_version }}"
+      binario: pulumi/pulumi
+      url: "https://github.com/pulumi/pulumi/releases/download/v{{ pulumi_version }}/pulumi-v{{ pulumi_version }}-linux-x64.tar.gz"
+  loop_control:
+    label: "{{ item.carpeta }}"
+
+- name: Usar las versiones instaladas (terraform, tofu)
+  ansible.builtin.file:
+    src: "/opt/herramientas/{{ item }}"
+    dest: "/usr/local/bin/{{ item | basename }}"
+    state: link
+  loop:
+    - "terraform-{{ terraform_version }}/terraform"
+    - "tofu-{{ tofu_version }}/tofu"
+
+# Pulumi trae varios programas (pulumi, pulumi-language-nodejs...): se enlaza la carpeta.
+- name: Usar la versión instalada de Pulumi (carpeta)
+  ansible.builtin.file:
+    src: "/opt/herramientas/pulumi-{{ pulumi_version }}/pulumi"
+    dest: /opt/herramientas/pulumi
+    state: link
+
+- name: Programas de Pulumi en el PATH
+  ansible.builtin.find:
+    paths: /opt/herramientas/pulumi/
+    file_type: file
+  register: herramientas_pulumi
+
+- name: Enlazar los programas de Pulumi
+  ansible.builtin.file:
+    src: "{{ item.path }}"
+    dest: "/usr/local/bin/{{ item.path | basename }}"
+    state: link
+  loop: "{{ herramientas_pulumi.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+
+# ---------------------------------------------------------------- escáneres (última versión)
+- name: Repositorio de Trivy
+  ansible.builtin.yum_repository:
+    name: trivy
+    description: Trivy
+    baseurl: https://aquasecurity.github.io/trivy-repo/rpm/releases/$basearch/
+    gpgkey: https://aquasecurity.github.io/trivy-repo/rpm/public.key
+    gpgcheck: true
+
+- name: Instalar Trivy
+  ansible.builtin.dnf:
+    name: trivy
+    state: present
+
+# Sin versión en el nombre del archivo: se descarga siempre la última publicada.
+- name: TFLint e Infracost (última versión)
+  ansible.builtin.unarchive:
+    src: "{{ item.url }}"
+    dest: /opt/herramientas
+    remote_src: true
+    creates: "/opt/herramientas/{{ item.archivo }}"
+  loop:
+    - archivo: tflint
+      url: https://github.com/terraform-linters/tflint/releases/latest/download/tflint_linux_amd64.zip
+    - archivo: infracost-linux-amd64
+      url: https://github.com/infracost/infracost/releases/latest/download/infracost-linux-amd64.tar.gz
+  loop_control:
+    label: "{{ item.archivo }}"
+
+# Gitleaks y Conftest llevan la versión en el nombre: se pregunta a GitHub cuál es la última.
+- name: Última versión de Gitleaks y Conftest
+  ansible.builtin.uri:
+    url: "https://api.github.com/repos/{{ item }}/releases/latest"
+    return_content: true
+  loop: [gitleaks/gitleaks, open-policy-agent/conftest]
+  register: herramientas_versiones
+  changed_when: false
+
+- name: Descargar Gitleaks y Conftest
+  ansible.builtin.unarchive:
+    src: "{{ item.url }}"
+    dest: /opt/herramientas
+    remote_src: true
+    creates: "/opt/herramientas/{{ item.archivo }}"
+  vars:
+    herramientas_gitleaks: "{{ herramientas_versiones.results[0].json.tag_name | regex_replace('^v', '') }}"
+    herramientas_conftest: "{{ herramientas_versiones.results[1].json.tag_name | regex_replace('^v', '') }}"
+    herramientas_conftest_url: https://github.com/open-policy-agent/conftest/releases/download
+  loop:
+    - archivo: gitleaks
+      url: "https://github.com/gitleaks/gitleaks/releases/download/v{{ herramientas_gitleaks }}/gitleaks_{{ herramientas_gitleaks }}_linux_x64.tar.gz"
+    - archivo: conftest
+      url: "{{ herramientas_conftest_url }}/v{{ herramientas_conftest }}/conftest_{{ herramientas_conftest }}_Linux_x86_64.tar.gz"
+  loop_control:
+    label: "{{ item.archivo }}"
+
+- name: Enlazar TFLint, Infracost, Gitleaks y Conftest
+  ansible.builtin.file:
+    src: "/opt/herramientas/{{ item.archivo }}"
+    dest: "/usr/local/bin/{{ item.nombre }}"
+    state: link
+  loop:
+    - { archivo: tflint, nombre: tflint }
+    - { archivo: infracost-linux-amd64, nombre: infracost }
+    - { archivo: gitleaks, nombre: gitleaks }
+    - { archivo: conftest, nombre: conftest }
+  loop_control:
+    label: "{{ item.nombre }}"
+
+# ---------------------------------------------------------------- Python: Ansible y escáneres
+# Entornos separados: Checkov fija muchas dependencias y no debe romper Ansible.
+- name: Ansible para el worker
+  ansible.builtin.pip:
+    # Versiones que todavía manejan el Python 3.9 de Amazon Linux 2023 en los servidores.
+    name: ["ansible-core>=2.17,<2.20"]
+    virtualenv: /opt/herramientas/ansible
+    virtualenv_command: /usr/bin/python3.11 -m venv
+
+- name: Checkov y cfn-lint
+  ansible.builtin.pip:
+    name: [checkov, cfn-lint]
+    virtualenv: /opt/herramientas/escaneres
+    virtualenv_command: /usr/bin/python3.11 -m venv
+
+- name: Enlazar Ansible, Checkov y cfn-lint
+  ansible.builtin.file:
+    src: "/opt/herramientas/{{ item }}"
+    dest: "/usr/local/bin/{{ item | basename }}"
+    state: link
+  loop:
+    - ansible/bin/ansible
+    - ansible/bin/ansible-playbook
+    - ansible/bin/ansible-inventory
+    - ansible/bin/ansible-vault
+    - escaneres/bin/checkov
+    - escaneres/bin/cfn-lint
+
+- name: Versiones instaladas
+  ansible.builtin.shell: |
+    set -o pipefail
+    for p in terraform tofu pulumi aws ansible-playbook tflint checkov trivy gitleaks conftest infracost cfn-lint; do
+      printf '%-17s %s\n' "$p" "$($p --version 2>&1 | head -1)"
+    done
+  args:
+    executable: /bin/bash
+  register: herramientas_resumen
+  changed_when: false
+
+- name: Mostrar versiones
+  ansible.builtin.debug:
+    var: herramientas_resumen.stdout_lines

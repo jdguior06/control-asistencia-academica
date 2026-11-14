@@ -24,6 +24,12 @@
     state: restarted
     daemon_reload: true
 
+- name: Reiniciar worker
+  ansible.builtin.systemd:
+    name: asistencia-worker
+    state: restarted
+    daemon_reload: true
+
 - name: Reiniciar portal
   ansible.builtin.systemd:
     name: asistencia-portal

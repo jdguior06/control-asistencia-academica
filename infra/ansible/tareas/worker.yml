@@ -1,0 +1,163 @@
+# worker: el servicio que crea y borra tenants desde el portal (vm-plataforma).
+#
+#   portal (usuario asistencia)  ── escribe el trabajo en la base ──►  platform_jobs
+#   worker (usuario iac)         ── lo toma y ejecuta ──────────────►  infra/scripts/aprovisionar.sh
+#
+# El worker usa SU PROPIA copia del repositorio (/opt/iac/repo): ahí Terraform,
+# Pulumi y Ansible escriben sus archivos. Las credenciales de AWS son las del rol
+# de IAM del servidor (no hay claves guardadas).
+
+- name: Usuario del worker (iac)
+  ansible.builtin.user:
+    name: iac
+    system: true
+    home: /opt/iac
+    create_home: true
+    shell: /bin/bash
+    generate_ssh_key: true # con esta clave entra por SSH a los servidores de los tenants
+    ssh_key_type: ed25519
+    ssh_key_file: .ssh/id_ed25519
+    ssh_key_comment: worker-plataforma
+  register: worker_usuario
+
+# Ansible configura el gateway en este mismo servidor (Nginx), con sudo.
+- name: Sudo sin contraseña para iac
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/iac
+    content: "iac ALL=(ALL) NOPASSWD: ALL\n"
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
+
+- name: Copia del repositorio para el worker
+  ansible.builtin.git:
+    repo: "{{ app_repo }}"
+    dest: /opt/iac/repo
+    version: "{{ app_rama }}"
+    depth: 1
+    force: true # descarta cambios locales (Pulumi.<slug>.yaml, .terraform/ quedan: no están en git)
+  become: true
+  become_user: iac
+  register: worker_codigo
+  notify: Reiniciar worker
+
+- name: Comprobar las dependencias del worker
+  ansible.builtin.stat:
+    path: /opt/iac/repo/Admin-institucional/server/node_modules
+  register: worker_dependencias
+
+- name: Dependencias del worker (npm ci)
+  ansible.builtin.command:
+    cmd: npm ci --omit=dev --no-audit --no-fund
+    chdir: /opt/iac/repo/Admin-institucional/server
+  become: true
+  become_user: iac
+  when: worker_codigo is changed or not worker_dependencias.stat.exists
+  changed_when: true
+  notify: Reiniciar worker
+
+# Datos de la plataforma (de tu PC) + la clave del worker: así los tenants que cree
+# el portal aceptan al worker por SSH.
+- name: Carpeta de archivos generados del worker
+  ansible.builtin.file:
+    path: /opt/iac/repo/infra/generado/tenants
+    state: directory
+    owner: iac
+    group: iac
+    mode: "0700"
+
+- name: Datos de la plataforma para los motores (plataforma.json)
+  ansible.builtin.copy:
+    dest: /opt/iac/repo/infra/generado/plataforma.json
+    owner: iac
+    group: iac
+    mode: "0644"
+    content: >-
+      {{ worker_plataforma | combine({'claves_ssh': (worker_plataforma.claves_ssh + [worker_usuario.ssh_public_key]) | unique}) | to_nice_json }}
+  vars:
+    worker_plataforma: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../generado/plataforma.json') | from_json }}"
+
+# La misma contraseña de Vault de tu PC: tenant.yml carga group_vars/all/vault.yml.
+- name: Contraseña de Vault para el worker
+  ansible.builtin.copy:
+    dest: /opt/iac/.vault_asistencia
+    content: "{{ lookup('ansible.builtin.file', '~/.vault_asistencia') }}\n"
+    owner: iac
+    group: iac
+    mode: "0600"
+  no_log: true
+
+- name: Carpeta de ajustes del worker
+  ansible.builtin.file:
+    path: /etc/asistencia-worker
+    state: directory
+    mode: "0755"
+
+- name: Variables del worker (base del portal, Pulumi, Infracost)
+  ansible.builtin.copy:
+    dest: /etc/asistencia-worker/worker.env
+    owner: root
+    group: iac
+    mode: "0640"
+    content: |
+      # Administrado por Ansible (infra/ansible). No editar a mano.
+      PLATFORM_DATABASE_URL=postgresql://{{ portal_db_usuario }}:{{ portal_db_password }}@127.0.0.1:{{ db_puerto }}/{{ portal_db_nombre }}
+      PLATFORM_INFRA_DIR=/opt/iac/repo/infra
+      # Para vincular al tenant e invitar a su administrador al terminar.
+      PLATFORM_TENANT_DOMAIN={{ dominio }}
+      PLATFORM_ALLOW_HTTP_TENANTS=true
+      PLATFORM_MAIL_TRANSPORT=preview
+      # Pulumi cifra la configuración de cada stack con esta frase.
+      PULUMI_CONFIG_PASSPHRASE={{ vault_pulumi_passphrase }}
+      PULUMI_SKIP_UPDATE_CHECK=true
+      INFRACOST_API_KEY={{ vault_infracost_api_key | default('') }}
+      HOME=/opt/iac
+      PATH=/usr/local/bin:/usr/bin:/bin
+  diff: false
+  notify: Reiniciar worker
+
+# Para entrar a mano y ejecutar aprovisionar.sh con el mismo entorno: sudo -iu iac
+- name: Entorno al entrar como iac
+  ansible.builtin.copy:
+    dest: /opt/iac/.bash_profile
+    owner: iac
+    group: iac
+    mode: "0644"
+    content: |
+      # Administrado por Ansible. El mismo entorno que el servicio asistencia-worker.
+      set -a
+      . /etc/asistencia-worker/worker.env
+      set +a
+      cd /opt/iac/repo/infra
+
+- name: Servicio systemd del worker
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/asistencia-worker.service
+    mode: "0644"
+    content: |
+      # Administrado por Ansible (infra/ansible). No editar a mano.
+      [Unit]
+      Description=Worker de aprovisionamiento de tenants
+      After=network-online.target postgresql.service
+      Wants=network-online.target
+
+      [Service]
+      User=iac
+      WorkingDirectory=/opt/iac/repo/Admin-institucional/server
+      EnvironmentFile=/etc/asistencia-worker/worker.env
+      ExecStart=/usr/bin/node src/worker.js
+      Restart=always
+      RestartSec=10
+      # Al detenerlo, deja terminar el trabajo en curso (hasta 30 min).
+      KillMode=mixed
+      TimeoutStopSec=1800
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: Reiniciar worker
+
+- name: Worker activo al arrancar
+  ansible.builtin.systemd:
+    name: asistencia-worker
+    enabled: true
+    state: started
+    daemon_reload: true
