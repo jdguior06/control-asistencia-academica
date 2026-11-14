@@ -49,6 +49,11 @@
       [ml]
           enabled = no
 
+      # Netdata trae un receptor OTLP (otel.plugin) que usa el puerto 4317, el mismo
+      # del OpenTelemetry Collector: se apaga para que el Collector pueda arrancar.
+      [plugins]
+          otel = no
+
       [web]
           bind to = *:{{ netdata_puerto }}
   notify: Reiniciar Netdata

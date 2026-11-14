@@ -63,17 +63,14 @@ async function tenantForRequest(client, requestId, lock = false) {
   return tenant;
 }
 
-// Estado de la infraestructura según el último trabajo terminado.
-async function infrastructureExists(client, tenantId) {
+// Último trabajo terminado de la institución (o null si nunca tuvo uno).
+async function lastFinishedJob(client, tenantId) {
   const { rows: [last] } = await client.query(`
     SELECT action, status FROM platform_jobs
     WHERE tenant_id = $1 AND status IN ('succeeded', 'failed')
     ORDER BY created_at DESC LIMIT 1
   `, [tenantId]);
-  if (!last) return false;
-  // Una creación fallida puede haber dejado recursos a medias: se puede eliminar.
-  if (last.action === 'create') return true;
-  return last.status === 'failed';
+  return last ?? null;
 }
 
 async function enqueue(client, tenant, action) {
@@ -157,11 +154,15 @@ async function startJob(pool, requestId, action, confirmation) {
   return transaction(pool, async (client) => {
     const tenant = await tenantForRequest(client, requestId, true);
     if (!tenant) throw new ProvisioningError(409, 'Registra la institución antes de crear su infraestructura.');
-    const exists = await infrastructureExists(client, tenant.id);
-    if (action === 'create' && exists) {
+    const last = await lastFinishedJob(client, tenant.id);
+    // Crear: nunca creada, eliminada, o una creación que falló (reintentar: los motores
+    // retoman lo que ya existe y Ansible es idempotente).
+    if (action === 'create' && last?.action === 'create' && last.status === 'succeeded') {
       throw new ProvisioningError(409, 'La institución ya tiene infraestructura. Elimínala antes de volver a crearla.');
     }
     if (action === 'delete') {
+      // Una creación (aunque haya fallado a medias) o una eliminación fallida dejan recursos.
+      const exists = last !== null && (last.action === 'create' || last.status === 'failed');
       if (!exists) throw new ProvisioningError(409, 'La institución no tiene infraestructura que eliminar.');
       if (confirmation !== tenant.slug) {
         throw new ProvisioningError(400, `Para confirmar, escribe el identificador «${tenant.slug}».`);

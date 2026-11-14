@@ -53,14 +53,16 @@
     state: restarted
     daemon_reload: true
 
-- name: Reiniciar Collector
-  ansible.builtin.systemd:
-    name: otelcol-contrib
-    state: restarted
-
+# Netdata ANTES que el Collector: los handlers corren en este orden, y Netdata
+# tiene que soltar el puerto 4317 (ver netdata.yml) antes de que arranque el Collector.
 - name: Reiniciar Netdata
   ansible.builtin.systemd:
     name: netdata
+    state: restarted
+
+- name: Reiniciar Collector
+  ansible.builtin.systemd:
+    name: otelcol-contrib
     state: restarted
 
 - name: Reiniciar Prometheus
