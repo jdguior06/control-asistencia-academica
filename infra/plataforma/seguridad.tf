@@ -66,6 +66,15 @@ resource "aws_vpc_security_group_ingress_rule" "monitoreo_paneles" {
   cidr_ipv4         = var.acceso_paneles
 }
 
+resource "aws_vpc_security_group_ingress_rule" "monitoreo_desde_portal" {
+  security_group_id            = aws_security_group.monitoreo.id
+  description                  = "Prometheus para la pantalla Monitoreo del portal"
+  ip_protocol                  = "tcp"
+  from_port                    = 9090
+  to_port                      = 9090
+  referenced_security_group_id = aws_security_group.plataforma.id
+}
+
 resource "aws_vpc_security_group_ingress_rule" "monitoreo_ssh" {
   security_group_id = aws_security_group.monitoreo.id
   description       = "SSH (Ansible)"

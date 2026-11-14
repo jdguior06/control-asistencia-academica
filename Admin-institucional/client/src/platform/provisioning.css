@@ -47,3 +47,4 @@
 
 .pv-spin { animation: pa-rotate .9s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .pv-spin { animation: none; } }
+.pv-badge-paused { color: #805715; background: #fff1d5; }

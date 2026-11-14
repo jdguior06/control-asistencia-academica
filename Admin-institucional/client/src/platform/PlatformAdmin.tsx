@@ -37,7 +37,7 @@ const menuGroups = [
   { id: 'admin', label: 'Administración' },
 ] as const
 
-const demoViews: Partial<Record<View, ComponentType>> = {
+const pageViews: Partial<Record<View, ComponentType<{ onSessionExpired: () => void }>>> = {
   monitoring: PlatformMonitoring,
   audit: PlatformAudit,
   settings: PlatformSettings,
@@ -392,7 +392,7 @@ function Console({ user, onLogout }: { user: PlatformUser; onLogout: () => void 
   const selected = visibleRequests.find(request => request.id === selectedId) ?? visibleRequests[0]
   const selectedPlan = plans.find(plan => plan.id === selected?.planId)
   const activeNav = navigation.find(item => item.id === view)!
-  const DemoView = demoViews[view]
+  const PageView = pageViews[view]
   const initials = user.name.trim().split(/\s+/).slice(0, 2).map(name => name[0]).join('').toUpperCase()
 
   function changeView(next: View) {
@@ -515,14 +515,14 @@ function Console({ user, onLogout }: { user: PlatformUser; onLogout: () => void 
           </div>
           {view === 'plans'
             ? <button className="pa-primary pa-create-plan" type="button" disabled={loading} onClick={() => setCreatePlanOpen(true)}><Plus size={18} aria-hidden="true" /> Crear plan</button>
-            : !DemoView && <div className="pa-page-actions">
+            : !PageView && <div className="pa-page-actions">
               <button className="pa-secondary pa-refresh" type="button" disabled={loading} onClick={refresh}><RefreshCw size={15} aria-hidden="true" /> Actualizar</button>
               {(view === 'home' || view === 'tenants') && <button className="pa-primary" type="button" aria-haspopup="dialog" disabled={loading || Boolean(error)} onClick={openTenantDialog}><Plus size={18} aria-hidden="true" /> Crear institución</button>}
             </div>}
         </header>
         {logoutError && <ErrorNotice>{logoutError}</ErrorNotice>}
         {notice && <div className="pa-notice" role="status"><Check size={18} /><span>{notice}</span><button type="button" aria-label="Cerrar aviso" onClick={() => setNotice('')}><X size={17} /></button></div>}
-        {DemoView ? <DemoView /> : loading ? <div className="pa-card pa-empty" role="status"><span className="pa-spinner" />Cargando el panel…</div> : error ? <div className="pa-card pa-load-error">
+        {PageView ? <PageView onSessionExpired={onLogout} /> : loading ? <div className="pa-card pa-empty" role="status"><span className="pa-spinner" />Cargando el panel…</div> : error ? <div className="pa-card pa-load-error">
           <ErrorNotice>{error}</ErrorNotice>
           <button type="button" className="pa-secondary" onClick={refresh}>Volver a intentar</button>
         </div> : view === 'home' ? <PlatformHome requests={requests} plans={plans}

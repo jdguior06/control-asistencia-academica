@@ -15,7 +15,8 @@ variable "prefijo" {
 variable "regiones_tenant" {
   description = "Regiones donde se pueden crear tenants. Prometheus busca servidores en todas ellas."
   type        = list(string)
-  default     = ["us-east-1", "us-east-2", "us-west-2"]
+  # Las 3 regiones que permite la organización de la cuenta (SCP de la cuenta administradora).
+  default = ["us-east-2", "us-east-1", "us-west-2"]
 }
 
 variable "tipo_plataforma" {

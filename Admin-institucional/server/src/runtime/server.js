@@ -2,6 +2,8 @@ const express = require('express');
 const { createPool, migrate, transaction } = require('./db');
 const { InvitationError, allowedTenantOrigin, deliverInvitation, issueTenantInvitation, tenantIsActivated } = require('./invitations');
 const { ProvisioningError, createInstitution, latestJob, startJob } = require('./provisioning');
+const { audit, listAudit } = require('./audit');
+const { monitoringSnapshot } = require('./monitoring');
 const {
   bootstrapAdmin, configuredAdmin, closeSession, limitLogins, newToken,
   openSession, sessionUser, tokenHash, tokenPattern, validEmail,
@@ -251,6 +253,12 @@ async function refreshTenantActivation(pool, row) {
     WHERE id = $1 AND invitation_status <> 'activated'
     RETURNING invitation_status, invitation_updated_at
   `, [row.tenant_id]);
+  if (activated) {
+    await audit(pool, {
+      action: 'activation', actor: row.admin_name, actorRole: 'Institución', resource: row.institution_name,
+      reference: row.slug, description: 'El administrador activó su cuenta y creó su contraseña.',
+    });
+  }
   return { ...row, invitation_status: 'activated', ...activated };
 }
 
@@ -299,6 +307,10 @@ function createApp(pool, platformOnly) {
       RETURNING id, institution_name, admin_name, admin_email, plan_id, status, created_at, updated_at
     `, [institution, name, email, plan, tokenHash(trackingToken)]);
     if (!row) throw new HttpError(400, 'El plan seleccionado no existe.');
+    await audit(pool, {
+      action: 'request', result: 'pending', actor: name, actorRole: 'Sitio público', resource: institution,
+      reference: `Solicitud ${row.id.slice(0, 8)}`, description: `Se recibió la solicitud para el plan ${plan}.`,
+    });
     response.status(201).json({ request: serializeRequest(row), trackingToken });
   });
 
@@ -318,7 +330,17 @@ function createApp(pool, platformOnly) {
       throw new HttpError(401, 'Correo o contraseña incorrectos.');
     }
     const user = await openSession(pool, request, response, email, password);
-    if (!user) throw new HttpError(401, 'Correo o contraseña incorrectos.');
+    if (!user) {
+      await audit(pool, {
+        action: 'login', result: 'failed', actor: email, actorRole: 'Operador', resource: 'Panel de la plataforma',
+        description: 'Intento de inicio de sesión con credenciales incorrectas.', details: { ip: request.ip },
+      });
+      throw new HttpError(401, 'Correo o contraseña incorrectos.');
+    }
+    await audit(pool, {
+      action: 'login', actor: user.name, actorRole: 'Operador', resource: 'Panel de la plataforma',
+      reference: user.email, description: 'Inicio de sesión.', details: { ip: request.ip },
+    });
     response.json({ user });
   });
 
@@ -335,31 +357,53 @@ function createApp(pool, platformOnly) {
 
   platform.delete('/session', async (request, response) => {
     await closeSession(pool, request, response);
+    await audit(pool, {
+      action: 'logout', actor: response.locals.user.name, actorRole: 'Operador', resource: 'Panel de la plataforma',
+      reference: response.locals.user.email, description: 'Cierre de sesión.',
+    });
     response.sendStatus(204);
   });
 
   platform.post('/plans', async (request, response) => {
     const plan = await createPlan(pool, readPlan(request.body));
+    await audit(pool, {
+      action: 'plan', actor: response.locals.user.name, actorRole: 'Operador', resource: plan.name, reference: plan.id,
+      description: `Se creó el plan con ${plan.instances?.length ?? 3} perfiles de máquina.`,
+    });
     response.status(201).json({ plan });
   });
 
   platform.get('/requests', async (_request, response) => {
     const { rows } = await pool.query(`${requestSelect} ORDER BY r.created_at DESC, r.id DESC`);
-    response.json({ requests: rows.map((row) => serializeRequest(row)) });
+    // Pregunta a cada instalación vinculada si su administrador ya activó la cuenta.
+    const refreshed = await Promise.all(rows.map((row) => refreshTenantActivation(pool, row).catch(() => row)));
+    response.json({ requests: refreshed.map((row) => serializeRequest(row)) });
   });
 
   platform.post('/requests/:id/register', async (request, response) => {
     const registered = await registerTenant(pool, request.params.id, tenantConfig(request.body));
+    await audit(pool, {
+      action: 'registration', actor: response.locals.user.name, actorRole: 'Operador',
+      resource: registered.institutionName, reference: registered.tenant?.slug ?? '',
+      description: `Se registró la institución (${registered.tenant?.region}, ${registered.tenant?.engine}).`,
+      details: { region: registered.tenant?.region, engine: registered.tenant?.engine },
+    });
     response.json({ request: registered });
   });
 
   platform.post('/requests/:id/invitation', async (request, response) => {
-    response.json(await inviteTenant(pool, request.params.id, request.body));
+    const result = await inviteTenant(pool, request.params.id, request.body);
+    await audit(pool, {
+      action: 'invitation', actor: response.locals.user.name, actorRole: 'Operador',
+      resource: result.request.institutionName, reference: result.request.tenant?.slug ?? '',
+      description: `Se generó el enlace de activación del administrador (${result.request.tenant?.invitationStatus}).`,
+    });
+    response.json(result);
   });
 
   // Aprovisionamiento (lo ejecuta el worker: src/worker.js).
   platform.post('/tenants', async (request, response) => {
-    const { requestId, job } = await createInstitution(pool, request.body);
+    const { requestId, job } = await createInstitution(pool, request.body, response.locals.user);
     const { rows: [row] } = await pool.query(`${requestSelect} WHERE r.id = $1`, [requestId]);
     response.status(201).json({ request: serializeRequest(row), job });
   });
@@ -371,13 +415,31 @@ function createApp(pool, platformOnly) {
 
   platform.post('/requests/:id/provision', async (request, response) => {
     requireRequestId(request.params.id);
-    response.status(201).json({ job: await startJob(pool, request.params.id, 'create') });
+    response.status(201).json({ job: await startJob(pool, request.params.id, 'create', '', response.locals.user) });
+  });
+
+  platform.post('/requests/:id/suspend', async (request, response) => {
+    requireRequestId(request.params.id);
+    response.status(201).json({ job: await startJob(pool, request.params.id, 'suspend', '', response.locals.user) });
+  });
+
+  platform.post('/requests/:id/resume', async (request, response) => {
+    requireRequestId(request.params.id);
+    response.status(201).json({ job: await startJob(pool, request.params.id, 'resume', '', response.locals.user) });
+  });
+
+  platform.get('/monitoring', async (_request, response) => {
+    response.json(await monitoringSnapshot(pool));
+  });
+
+  platform.get('/audit', async (_request, response) => {
+    response.json({ events: await listAudit(pool) });
   });
 
   platform.post('/requests/:id/deprovision', async (request, response) => {
     requireRequestId(request.params.id);
     const confirmation = typeof request.body?.confirm === 'string' ? request.body.confirm.trim() : '';
-    response.status(201).json({ job: await startJob(pool, request.params.id, 'delete', confirmation) });
+    response.status(201).json({ job: await startJob(pool, request.params.id, 'delete', confirmation, response.locals.user) });
   });
 
   app.use('/api/platform', platform);

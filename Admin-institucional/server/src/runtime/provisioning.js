@@ -2,6 +2,7 @@
 // (src/worker.js) lo ejecuta con infra/scripts/aprovisionar.sh.
 const { transaction } = require('./db');
 const { newToken, tokenHash, validEmail } = require('./security');
+const { JOB_ACTIONS, audit } = require('./audit');
 
 class ProvisioningError extends Error {
   constructor(status, message) {
@@ -10,9 +11,12 @@ class ProvisioningError extends Error {
   }
 }
 
-// Lo que la infraestructura sabe crear hoy (infra/tenant/*). Azure se ve en el
-// formulario, pero todavía no se aprovisiona.
-const PROVISIONABLE_REGIONS = ['us-east-1', 'us-east-2', 'us-west-2'];
+// Dónde se puede crear hoy: las 3 regiones que permite la organización de la cuenta de AWS.
+// Azure se ve en el formulario, pero todavía no se aprovisiona.
+const PROVISIONABLE_REGIONS = ['us-east-2', 'us-east-1', 'us-west-2'];
+// Instituciones con infraestructura por región. Cada una usa 6 vCPU y la cuota es de
+// 16 por región (en Ohio, además, la plataforma usa 4): 2 por región entran.
+const TENANTS_PER_REGION = Number(process.env.PLATFORM_TENANTS_PER_REGION) || 2;
 const PROVISIONABLE_PLANS = ['basico', 'estandar', 'avanzado'];
 
 const jobSelect = `
@@ -56,7 +60,7 @@ function readSlug(value) {
 
 async function tenantForRequest(client, requestId, lock = false) {
   const { rows: [tenant] } = await client.query(`
-    SELECT t.id, t.slug, t.region, t.engine, t.network_number, r.plan_id
+    SELECT t.id, t.slug, t.region, t.engine, t.network_number, r.plan_id, r.institution_name
     FROM platform_tenants t JOIN platform_requests r ON r.id = t.request_id
     WHERE t.request_id = $1 ${lock ? 'FOR UPDATE OF t' : ''}
   `, [requestId]);
@@ -73,20 +77,55 @@ async function lastFinishedJob(client, tenantId) {
   return last ?? null;
 }
 
-async function enqueue(client, tenant, action) {
+// Estado de la infraestructura según el último trabajo terminado:
+//   none (sin infraestructura) · ready (encendida) · suspended (apagada) · failed (a medias)
+function infrastructureState(last) {
+  if (!last) return 'none';
+  const ok = last.status === 'succeeded';
+  switch (last.action) {
+    case 'create': return ok ? 'ready' : 'failed';
+    case 'delete': return ok ? 'none' : 'failed';
+    case 'suspend': return ok ? 'suspended' : 'ready';
+    case 'resume': return ok ? 'ready' : 'suspended';
+    default: return 'none';
+  }
+}
+
+const descriptions = {
+  create: 'Se inició la creación de la infraestructura',
+  delete: 'Se inició la eliminación de la infraestructura',
+  suspend: 'Se inició la suspensión (apagar los servidores)',
+  resume: 'Se inició la reanudación (encender los servidores)',
+};
+
+async function enqueue(client, tenant, action, user) {
   if (action === 'create') {
     if (tenant.slug.length > 30) {
       throw new ProvisioningError(422, 'El identificador debe tener como máximo 30 caracteres para crear su infraestructura.');
     }
     if (!PROVISIONABLE_REGIONS.includes(tenant.region)) {
-      throw new ProvisioningError(422, 'Por ahora solo se crea infraestructura en AWS (us-east-1, us-east-2 o us-west-2).');
+      throw new ProvisioningError(422, 'Solo se crea infraestructura en AWS Ohio, Virginia del Norte u Oregón.');
     }
     if (!PROVISIONABLE_PLANS.includes(tenant.plan_id)) {
       throw new ProvisioningError(422, 'Solo los planes Básico, Estándar y Avanzado tienen infraestructura definida.');
     }
-    // Red 10.N.0.0/16 libre (un bloqueo evita que dos instituciones reciban el mismo número).
+    // Un bloqueo evita que dos creaciones simultáneas pasen el límite o reciban la misma red.
+    await client.query('SELECT pg_advisory_xact_lock(4300002)');
+    // Cuántas instituciones de la región tienen infraestructura (creada, suspendida, fallida
+    // o en curso): cuenta todo lo que no terminó en "eliminada".
+    const { rows: [used] } = await client.query(`
+      SELECT count(*)::int AS n
+      FROM platform_tenants t
+      JOIN LATERAL (
+        SELECT action, status FROM platform_jobs WHERE tenant_id = t.id ORDER BY created_at DESC LIMIT 1
+      ) j ON true
+      WHERE t.region = $1 AND t.id <> $2 AND NOT (j.action = 'delete' AND j.status = 'succeeded')
+    `, [tenant.region, tenant.id]);
+    if (used.n >= TENANTS_PER_REGION) {
+      throw new ProvisioningError(409, `La región ${tenant.region} ya tiene ${used.n} instituciones con infraestructura (máximo ${TENANTS_PER_REGION}, por la cuota de vCPU). Elimina una o elige otra región.`);
+    }
+    // Red 10.N.0.0/16 libre.
     if (!tenant.network_number) {
-      await client.query('SELECT pg_advisory_xact_lock(4300002)');
       const { rows: [free] } = await client.query(`
         SELECT n FROM generate_series(1, 250) AS n
         WHERE n NOT IN (SELECT network_number FROM platform_tenants WHERE network_number IS NOT NULL)
@@ -101,6 +140,13 @@ async function enqueue(client, tenant, action) {
       INSERT INTO platform_jobs (tenant_id, action) VALUES ($1, $2)
       RETURNING id, action, status, steps, log, result, error, created_at, started_at, finished_at
     `, [tenant.id, action]);
+    await audit(client, {
+      action: JOB_ACTIONS[action], result: 'started',
+      actor: user?.name ?? 'Operador', actorRole: 'Operador',
+      resource: tenant.institution_name ?? tenant.slug, reference: tenant.slug,
+      description: `${descriptions[action]} con ${tenant.engine}.`,
+      details: { jobId: job.id, engine: tenant.engine, region: tenant.region, plan: tenant.plan_id },
+    });
     return serializeJob(job);
   } catch (error) {
     if (error.code === '23505' && error.constraint === 'platform_jobs_one_active_idx') {
@@ -111,7 +157,7 @@ async function enqueue(client, tenant, action) {
 }
 
 // "Crear institución" del panel: registra la institución y encola la creación.
-async function createInstitution(pool, body) {
+async function createInstitution(pool, body, user) {
   const institution = text(body?.institutionName, 'El nombre de la institución', 2, 160);
   const name = text(body?.adminName, 'El nombre del administrador', 2, 120);
   const email = text(body?.adminEmail, 'El correo del administrador', 3, 254).toLowerCase();
@@ -139,7 +185,13 @@ async function createInstitution(pool, body) {
         VALUES ($1, $2, $3, $4, $5)
       `, [request.id, slug, region, environment, engine]);
       const tenant = await tenantForRequest(client, request.id, true);
-      const job = await enqueue(client, tenant, 'create');
+      await audit(client, {
+        action: 'registration', actor: user?.name ?? 'Operador', actorRole: 'Operador',
+        resource: institution, reference: slug,
+        description: `Se registró la institución (plan ${planId}, ${region}, ${engine}).`,
+        details: { plan: planId, region, engine, environment },
+      });
+      const job = await enqueue(client, tenant, 'create', user);
       return { requestId: request.id, job };
     });
   } catch (error) {
@@ -150,25 +202,30 @@ async function createInstitution(pool, body) {
   }
 }
 
-async function startJob(pool, requestId, action, confirmation) {
+async function startJob(pool, requestId, action, confirmation, user) {
   return transaction(pool, async (client) => {
     const tenant = await tenantForRequest(client, requestId, true);
     if (!tenant) throw new ProvisioningError(409, 'Registra la institución antes de crear su infraestructura.');
     const last = await lastFinishedJob(client, tenant.id);
+    const state = infrastructureState(last);
     // Crear: nunca creada, eliminada, o una creación que falló (reintentar: los motores
     // retoman lo que ya existe y Ansible es idempotente).
-    if (action === 'create' && last?.action === 'create' && last.status === 'succeeded') {
+    if (action === 'create' && !(state === 'none' || (last?.action === 'create' && state === 'failed'))) {
       throw new ProvisioningError(409, 'La institución ya tiene infraestructura. Elimínala antes de volver a crearla.');
     }
     if (action === 'delete') {
-      // Una creación (aunque haya fallado a medias) o una eliminación fallida dejan recursos.
-      const exists = last !== null && (last.action === 'create' || last.status === 'failed');
-      if (!exists) throw new ProvisioningError(409, 'La institución no tiene infraestructura que eliminar.');
+      if (state === 'none') throw new ProvisioningError(409, 'La institución no tiene infraestructura que eliminar.');
       if (confirmation !== tenant.slug) {
         throw new ProvisioningError(400, `Para confirmar, escribe el identificador «${tenant.slug}».`);
       }
     }
-    return enqueue(client, tenant, action);
+    if (action === 'suspend' && state !== 'ready') {
+      throw new ProvisioningError(409, 'Solo se puede suspender una institución con su infraestructura lista.');
+    }
+    if (action === 'resume' && !(state === 'suspended' || (last?.action === 'suspend' && last.status === 'failed'))) {
+      throw new ProvisioningError(409, 'La institución no está suspendida.');
+    }
+    return enqueue(client, tenant, action, user);
   });
 }
 
@@ -180,7 +237,39 @@ async function latestJob(pool, requestId) {
   return serializeJob(row);
 }
 
+// Estado de todas las instituciones (para el monitoreo del portal).
+async function tenantStates(pool) {
+  const { rows } = await pool.query(`
+    SELECT t.slug, t.region, t.engine, t.environment, r.institution_name, r.plan_id, t.app_url,
+           t.invitation_status, last.action AS last_action, last.status AS last_status,
+           active.action AS active_action
+    FROM platform_tenants t
+    JOIN platform_requests r ON r.id = t.request_id
+    LEFT JOIN LATERAL (
+      SELECT action, status FROM platform_jobs
+      WHERE tenant_id = t.id AND status IN ('succeeded', 'failed') ORDER BY created_at DESC LIMIT 1
+    ) last ON true
+    LEFT JOIN LATERAL (
+      SELECT action FROM platform_jobs
+      WHERE tenant_id = t.id AND status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 1
+    ) active ON true
+    ORDER BY r.institution_name
+  `);
+  return rows.map((row) => ({
+    slug: row.slug,
+    institutionName: row.institution_name,
+    plan: row.plan_id,
+    region: row.region,
+    engine: row.engine,
+    environment: row.environment,
+    appUrl: row.app_url ?? undefined,
+    invitationStatus: row.invitation_status,
+    state: infrastructureState(row.last_action ? { action: row.last_action, status: row.last_status } : null),
+    activeAction: row.active_action ?? undefined,
+  }));
+}
+
 module.exports = {
   PROVISIONABLE_PLANS, PROVISIONABLE_REGIONS, ProvisioningError,
-  createInstitution, latestJob, serializeJob, startJob,
+  createInstitution, infrastructureState, latestJob, serializeJob, startJob, tenantStates,
 };

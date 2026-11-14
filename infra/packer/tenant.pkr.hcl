@@ -8,11 +8,10 @@
 #
 #   cd infra\packer
 #   packer init .
-#   packer build .                                  # las 3 regiones a la vez
-#   packer build -only="amazon-ebs.oregon" .        # solo una región
+#   packer build .
 #
-# La imagen se construye EN CADA REGIÓN (no se copia): la cuenta del plan gratuito
-# tiene prohibido copiar AMIs entre regiones (ec2:CopyImage).
+# Se construye una imagen por región, en paralelo (la organización de la cuenta prohíbe
+# copiar AMIs entre regiones). Para una sola región: packer build -only="*.ohio" .
 #
 # Volver a crearla cuando cambie el código de la app o la lista de paquetes.
 

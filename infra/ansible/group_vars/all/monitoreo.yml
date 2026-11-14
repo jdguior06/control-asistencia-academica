@@ -29,7 +29,7 @@ prometheus_retencion: 15d
 # EC2 con la etiqueta Proyecto=asistencia y lee sus etiquetas (Tenant, Plan, Rol...).
 # Un tenant nuevo aparece en Grafana sin tocar Prometheus.
 # Las escribe infra/plataforma en el inventario (variable regiones_tenant de Terraform).
-regiones_tenant: "{{ regiones_terraform | default('us-east-1,us-east-2,us-west-2') | split(',') }}"
+regiones_tenant: "{{ regiones_terraform | default('us-east-2,us-east-1,us-west-2') | split(',') }}"
 
 # Servicios cuyo estado (activo/caído) vigila node_exporter.
 servicios_vigilados:

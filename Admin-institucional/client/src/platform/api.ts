@@ -63,7 +63,7 @@ export interface JobStep {
 // Un trabajo del worker: crear o eliminar la infraestructura de una institución.
 export interface ProvisioningJob {
   id: string
-  action: 'create' | 'delete'
+  action: 'create' | 'delete' | 'suspend' | 'resume'
   status: JobStatus
   steps: JobStep[]
   log: string
@@ -72,6 +72,74 @@ export interface ProvisioningJob {
   createdAt: string
   startedAt?: string
   finishedAt?: string
+}
+
+export type InfrastructureState = 'none' | 'ready' | 'suspended' | 'failed'
+
+export interface MonitoredServer {
+  server: string
+  role?: string
+  up: boolean
+}
+
+export interface MonitoringAlert {
+  name: string
+  tenant?: string
+  server?: string
+  severity?: string
+}
+
+// Estado de una institución: sus trabajos (base de datos) y sus métricas (Prometheus).
+export interface MonitoredTenant {
+  slug: string
+  institutionName: string
+  plan: string
+  region: string
+  engine: string
+  environment: string
+  appUrl?: string
+  invitationStatus?: InvitationStatus
+  state: InfrastructureState
+  activeAction?: ProvisioningJob['action']
+  monitored?: boolean
+  api?: boolean
+  agentsUp?: number
+  agentsTotal?: number
+  cpu?: number
+  memory?: number
+  disk?: number
+  requests?: number
+  latency?: number
+  connections?: number
+  servers: MonitoredServer[]
+  alerts?: number
+}
+
+export interface MonitoringSnapshot {
+  updatedAt: string
+  prometheus: 'ok' | 'error' | 'not-configured'
+  prometheusError?: string
+  grafanaUrl?: string
+  platform: MonitoredServer[]
+  alerts: MonitoringAlert[]
+  tenants: MonitoredTenant[]
+}
+
+export type AuditAction = 'login' | 'logout' | 'request' | 'registration' | 'plan' | 'invitation' | 'activation'
+  | 'deployment' | 'deletion' | 'suspension' | 'resumption'
+export type AuditResult = 'started' | 'completed' | 'pending' | 'failed'
+
+export interface AuditEvent {
+  id: string
+  timestamp: string
+  action: AuditAction
+  result: AuditResult
+  actor: string
+  actorRole: string
+  resource: string
+  reference: string
+  description: string
+  details: Record<string, unknown>
 }
 
 export interface PlatformUser {

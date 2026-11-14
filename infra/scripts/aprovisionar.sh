@@ -6,6 +6,7 @@
 #   cd /opt/iac/repo/infra
 #   bash scripts/aprovisionar.sh crear  --slug utepsa --motor terraform --region us-east-2 --plan basico --numero 1
 #   bash scripts/aprovisionar.sh borrar --slug utepsa --motor terraform --region us-east-2 --plan basico --numero 1
+#   bash scripts/aprovisionar.sh suspender|reanudar --slug utepsa --motor terraform --region us-east-2 --plan basico --numero 1
 #
 # Pasos al crear:
 #   1 Validar   2 Escaneo de seguridad del código   3 Plan y políticas (Conftest, Infracost)
@@ -30,7 +31,7 @@ titulo() { echo; echo "──── $* ────"; }
 trap 'echo "::error::$PASO::Falló: ${BASH_COMMAND:0:160}"' ERR
 
 # ------------------------------------------------------------------ entradas
-uso() { echo "Uso: $0 crear|borrar --slug S --motor M --region R --plan P [--entorno E] --numero N"; exit 2; }
+uso() { echo "Uso: $0 crear|borrar|suspender|reanudar --slug S --motor M --region R --plan P [--entorno E] --numero N"; exit 2; }
 accion=${1:-}; [[ $# -gt 0 ]] && shift
 slug=""; motor=""; region="us-east-2"; plan="basico"; entorno="production"; numero=0
 while [[ $# -gt 0 ]]; do
@@ -58,7 +59,7 @@ print(d if not isinstance(d,(list,dict)) else json.dumps(d))' "$1" "$2"; }
 
 # ==================================================================== 1. validar
 paso 1 "Validar datos"
-[[ $accion == crear || $accion == borrar ]] || fallar "acción '$accion' (crear o borrar)"
+[[ $accion =~ ^(crear|borrar|suspender|reanudar)$ ]] || fallar "acción '$accion' (crear, borrar, suspender o reanudar)"
 [[ $slug =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && ${#slug} -ge 3 && ${#slug} -le 30 ]] || fallar "slug '$slug' no válido (3 a 30: minúsculas, números y guiones)"
 [[ $motor =~ ^(terraform|opentofu|pulumi|cloudformation)$ ]] || fallar "motor '$motor' no válido"
 [[ $region =~ ^(us-east-1|us-east-2|us-west-2)$ ]] || fallar "región '$region' no disponible (us-east-1, us-east-2, us-west-2)"
@@ -84,6 +85,57 @@ done
 mkdir -p "$GEN"
 echo "Tenant $slug · motor $motor · región $region · plan $plan · red 10.$numero.0.0/16 · $slug.$DOMINIO"
 ok "$slug · 10.$numero.0.0/16 · $plan · $region · $motor"
+
+# ==================================================================== suspender / reanudar
+# Igual para los 4 motores: se apagan o encienden los servidores con la etiqueta del
+# tenant. Apagados no consumen vCPU ni horas de cómputo; los discos (y los datos) quedan.
+servidores_en() { # servidores_en running,pending
+  aws ec2 describe-instances --region "$region" \
+    --filters "Name=tag:Proyecto,Values=asistencia" "Name=tag:Tenant,Values=$slug" "Name=instance-state-name,Values=$1" \
+    --query 'Reservations[].Instances[].InstanceId' --output text
+}
+
+if [[ $accion == suspender ]]; then
+  paso 2 "Apagar los servidores"
+  ids=$(servidores_en running,pending)
+  if [[ -z $ids ]]; then
+    ok "ya estaban apagados"
+  else
+    echo "Apagando: $ids"
+    aws ec2 stop-instances --region "$region" --instance-ids $ids --output text >/dev/null
+    aws ec2 wait instance-stopped --region "$region" --instance-ids $ids
+    ok "$(wc -w <<<"$ids") servidores apagados · los datos se conservan"
+  fi
+  echo "Prometheus deja de vigilarlos (solo busca servidores encendidos) y el gateway responde 502."
+  echo '::resultado::{"suspendido":true}'
+  exit 0
+fi
+
+if [[ $accion == reanudar ]]; then
+  paso 2 "Encender los servidores"
+  ids=$(servidores_en stopped,stopping)
+  if [[ -z $ids ]]; then
+    ok "ya estaban encendidos"
+  else
+    echo "Encendiendo: $ids"
+    aws ec2 start-instances --region "$region" --instance-ids $ids --output text >/dev/null
+    aws ec2 wait instance-running --region "$region" --instance-ids $ids
+    ok "$(wc -w <<<"$ids") servidores encendidos (misma IP privada; los servicios arrancan solos)"
+  fi
+
+  paso 3 "Verificar"
+  url="http://$slug.$DOMINIO"
+  for intento in $(seq 1 30); do
+    codigo=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -H "Host: $slug.$DOMINIO" http://127.0.0.1/api/health || true)
+    [[ $codigo == 200 ]] && break
+    echo "Intento $intento: $url/api/health → $codigo (esperando a que arranquen los servicios)"
+    sleep 10
+  done
+  [[ $codigo == 200 ]] || fallar "$url/api/health respondió $codigo después de 5 minutos"
+  ok "$url responde"
+  python3 -c 'import json,sys; print("::resultado::"+json.dumps({"url":sys.argv[1]}))' "$url"
+  exit 0
+fi
 
 # ==================================================================== borrar
 if [[ $accion == borrar ]]; then
@@ -287,9 +339,11 @@ case $motor in
     else
       tipo_cambio=CREATE
       # Imagen propia de Packer solo al crear (cambiarla después recrearía los servidores).
+      # Si la cuenta no deja buscar imágenes (política de la organización), se usa Amazon Linux.
       imagen=$(aws ec2 describe-images --region "$region" --owners self \
         --filters 'Name=name,Values=asistencia-tenant-*' 'Name=state,Values=available' \
-        --query 'sort_by(Images,&CreationDate)[-1].ImageId' --output text)
+        --query 'sort_by(Images,&CreationDate)[-1].ImageId' --output text 2>&1) \
+        || { echo "No se pudo buscar la imagen propia: ${imagen:0:160}"; imagen=""; }
       [[ $imagen == ami-* ]] || imagen=""
     fi
     echo "Tipo: $tipo_cambio · imagen: ${imagen:-Amazon Linux 2023 (o la que ya tenía)}"

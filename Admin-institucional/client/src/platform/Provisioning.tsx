@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { AlertTriangle, Check, CircleAlert, Clock3, ExternalLink, LoaderCircle, Play, RotateCcw, ServerCog, Trash2, X } from 'lucide-react'
+import { AlertTriangle, Check, CircleAlert, Clock3, ExternalLink, LoaderCircle, Pause, Play, Power, RotateCcw, ServerCog, Trash2, X } from 'lucide-react'
 import { ApiError, api, errorMessage, formatDate, webLink, type JobStep, type ProvisioningJob, type TenantConfiguration } from './api'
 import { regions } from './tenant-options'
 import './provisioning.css'
@@ -16,14 +16,32 @@ const stepIcons = {
   error: CircleAlert,
 } satisfies Record<JobStep['status'], typeof Check>
 
+const verbs = {
+  create: { queued: 'En cola para crear', running: 'Creando infraestructura…', succeeded: 'Infraestructura lista', failed: 'La creación falló' },
+  delete: { queued: 'En cola para eliminar', running: 'Eliminando infraestructura…', succeeded: 'Infraestructura eliminada', failed: 'La eliminación falló' },
+  suspend: { queued: 'En cola para suspender', running: 'Apagando servidores…', succeeded: 'Suspendida', failed: 'La suspensión falló' },
+  resume: { queued: 'En cola para reanudar', running: 'Encendiendo servidores…', succeeded: 'Infraestructura lista', failed: 'La reanudación falló' },
+} satisfies Record<ProvisioningJob['action'], Record<ProvisioningJob['status'], string>>
+
 function jobLabel(job: ProvisioningJob | null) {
   if (!job) return { text: 'Sin infraestructura', tone: 'idle' }
-  const creating = job.action === 'create'
-  switch (job.status) {
-    case 'queued': return { text: creating ? 'En cola para crear' : 'En cola para eliminar', tone: 'busy' }
-    case 'running': return { text: creating ? 'Creando infraestructura…' : 'Eliminando infraestructura…', tone: 'busy' }
-    case 'succeeded': return creating ? { text: 'Infraestructura lista', tone: 'ok' } : { text: 'Infraestructura eliminada', tone: 'idle' }
-    default: return { text: creating ? 'La creación falló' : 'La eliminación falló', tone: 'error' }
+  const text = verbs[job.action][job.status]
+  if (job.status === 'queued' || job.status === 'running') return { text, tone: 'busy' }
+  if (job.status === 'failed') return { text, tone: 'error' }
+  if (job.action === 'delete') return { text, tone: 'idle' }
+  return { text, tone: job.action === 'suspend' ? 'paused' : 'ok' }
+}
+
+// Estado de la infraestructura según el último trabajo (igual que el servidor: provisioning.js).
+type State = 'none' | 'ready' | 'suspended' | 'failed'
+function infrastructureState(job: ProvisioningJob | null): State {
+  if (!job) return 'none'
+  const ok = job.status === 'succeeded'
+  switch (job.action) {
+    case 'create': return ok ? 'ready' : 'failed'
+    case 'delete': return ok ? 'none' : 'failed'
+    case 'suspend': return ok ? 'suspended' : 'ready'
+    default: return ok ? 'ready' : 'suspended'
   }
 }
 
@@ -84,7 +102,7 @@ export default function Provisioning({ requestId, tenant, onFinished, onActiveCh
     if (log && followLog.current) log.scrollTop = log.scrollHeight
   }, [job?.log])
 
-  async function start(action: 'provision' | 'deprovision', event?: FormEvent<HTMLFormElement>) {
+  async function start(action: 'provision' | 'deprovision' | 'suspend' | 'resume', event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault()
     setBusy(true)
     setError('')
@@ -105,10 +123,12 @@ export default function Provisioning({ requestId, tenant, onFinished, onActiveCh
     }
   }
 
-  const hasInfrastructure = job !== null && !(job.action === 'delete' && job.status === 'succeeded')
-  const canCreate = provisionable && !active && !hasInfrastructure
+  const state = infrastructureState(job)
+  const canCreate = provisionable && !active && state === 'none'
   const canRetryCreate = provisionable && !active && job?.action === 'create' && job.status === 'failed'
-  const canDelete = !active && hasInfrastructure
+  const canDelete = !active && state !== 'none'
+  const canSuspend = !active && state === 'ready'
+  const canResume = !active && (state === 'suspended' || (job?.action === 'suspend' && job.status === 'failed'))
   const url = webLink(job?.result?.url)
   const previewUrl = webLink(job?.result?.previewUrl)
 
@@ -158,6 +178,13 @@ export default function Provisioning({ requestId, tenant, onFinished, onActiveCh
       <div className="pa-invite-actions">
         {(canCreate || canRetryCreate) && <button type="button" className="pa-primary" disabled={busy} onClick={() => void start('provision')}>
           {canRetryCreate ? <><RotateCcw size={16} /> Reintentar creación</> : <><Play size={16} /> Crear infraestructura</>}
+        </button>}
+        {canSuspend && <button type="button" className="pa-secondary" disabled={busy} onClick={() => void start('suspend')}
+          title="Apaga los 3 servidores: no consumen vCPU ni horas de cómputo y los datos se conservan">
+          <Pause size={15} /> Suspender
+        </button>}
+        {canResume && <button type="button" className="pa-primary" disabled={busy} onClick={() => void start('resume')}>
+          <Power size={15} /> Reanudar
         </button>}
         {canDelete && !confirmDelete && <button type="button" className="pa-secondary pv-danger" disabled={busy} onClick={() => setConfirmDelete(true)}>
           <Trash2 size={15} /> {job?.action === 'delete' ? 'Reintentar eliminación' : 'Eliminar infraestructura'}

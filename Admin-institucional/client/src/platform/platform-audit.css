@@ -327,3 +327,11 @@
   .pau-dialog-meta { gap: 0 10px; }
   .pau-dialog-footer .pau-detail-button { min-height: 40px; }
 }
+
+/* Etapa 6: datos reales. */
+.pau-refresh { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; }
+.pau-spin { animation: pa-rotate .9s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .pau-spin { animation: none; } }
+.pau-steps { margin-top: 14px; }
+.pau-steps h4 { margin: 0 0 6px; font-size: 12px; color: var(--pa-muted, #655e76); text-transform: uppercase; letter-spacing: .03em; }
+.pau-steps ol { display: grid; gap: 4px; margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }

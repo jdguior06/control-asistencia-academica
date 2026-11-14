@@ -226,15 +226,19 @@ const usarImagen = config.getBoolean("usarImagen") ?? true;
 const amazonLinux = aws.ssm.getParameterOutput({
   name: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64",
 }, opTenant);
-const propias = aws.ec2.getAmiIdsOutput({
+// Si la cuenta no deja buscar imágenes (política de la organización), se usa Amazon Linux.
+const propias = pulumi.output(aws.ec2.getAmiIds({
   owners: ["self"],
   filters: [
     { name: "name", values: ["asistencia-tenant-*"] },
     { name: "state", values: ["available"] },
   ],
-}, opTenant);
+}, opTenant).then((r) => r.ids).catch((error) => {
+  pulumi.log.warn(`No se pudo buscar la imagen propia: ${String(error).slice(0, 160)}`);
+  return [] as string[];
+}));
 // getAmiIds las devuelve de la más nueva a la más vieja.
-const imagen = pulumi.all([propias.ids, amazonLinux.insecureValue])
+const imagen = pulumi.all([propias, amazonLinux.insecureValue])
   .apply(([ids, base]) => (usarImagen && ids.length > 0 ? ids[0] : base));
 
 // cloud-init mínimo: solo las claves SSH. Todo lo demás lo hace Ansible.

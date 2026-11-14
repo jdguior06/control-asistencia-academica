@@ -1,6 +1,7 @@
 export type Provider = 'aws' | 'azure'
 
-// Azure se muestra, pero todavía no se puede elegir: la infraestructura (infra/tenant) solo crea en AWS.
+// Las 3 regiones de AWS que permite la organización de la cuenta (2 instituciones por
+// región, por la cuota de vCPU). Azure se muestra, pero todavía no se puede elegir.
 export const providers = [
   { value: 'aws', label: 'AWS', disabled: false },
   { value: 'azure', label: 'Azure (próximamente)', disabled: true },

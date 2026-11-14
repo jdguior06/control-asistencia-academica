@@ -14,6 +14,16 @@ const { setTimeout: sleep } = require('node:timers/promises');
 const { databaseUrl } = require('./config');
 const { createPool } = require('./runtime/db');
 const { inviteTenant } = require('./runtime/server');
+const { JOB_ACTIONS, audit } = require('./runtime/audit');
+
+// Acción del trabajo -> argumento de aprovisionar.sh
+const SCRIPT_ACTIONS = { create: 'crear', delete: 'borrar', suspend: 'suspender', resume: 'reanudar' };
+const DONE = {
+  create: 'La infraestructura quedó lista',
+  delete: 'La infraestructura se eliminó',
+  suspend: 'Los servidores quedaron apagados',
+  resume: 'Los servidores volvieron a encenderse',
+};
 
 const INFRA = path.resolve(process.env.PLATFORM_INFRA_DIR ?? path.join(__dirname, '..', '..', '..', 'infra'));
 const SCRIPT = path.join(INFRA, 'scripts', 'aprovisionar.sh');
@@ -38,7 +48,7 @@ async function claim(pool) {
   `);
   if (!job) return null;
   const { rows: [tenant] } = await pool.query(`
-    SELECT t.id, t.request_id, t.slug, t.region, t.environment, t.engine, t.network_number, r.plan_id
+    SELECT t.id, t.request_id, t.slug, t.region, t.environment, t.engine, t.network_number, r.plan_id, r.institution_name
     FROM platform_tenants t JOIN platform_requests r ON r.id = t.request_id
     WHERE t.id = $1
   `, [job.tenant_id]);
@@ -48,7 +58,7 @@ async function claim(pool) {
 function runScript(pool, job) {
   const { tenant } = job;
   const args = [
-    SCRIPT, job.action === 'create' ? 'crear' : 'borrar',
+    SCRIPT, SCRIPT_ACTIONS[job.action],
     '--slug', tenant.slug, '--motor', tenant.engine, '--region', tenant.region,
     '--plan', tenant.plan_id, '--entorno', tenant.environment,
     '--numero', String(tenant.network_number ?? 0),
@@ -131,6 +141,7 @@ async function invite(pool, job, result) {
 
 async function process_(pool, job) {
   console.log(`Trabajo ${job.id}: ${job.action} ${job.tenant.slug} (${job.tenant.engine}, ${job.tenant.region})`);
+  const started = Date.now();
   const { code, steps, result } = await runScript(pool, job);
   let finalResult = result;
   let error = null;
@@ -161,6 +172,26 @@ async function process_(pool, job) {
   await pool.query(`
     UPDATE platform_jobs SET status = $2, result = $3, error = $4, finished_at = now() WHERE id = $1
   `, [job.id, code === 0 ? 'succeeded' : 'failed', finalResult ? JSON.stringify(finalResult) : null, error]);
+
+  const seconds = Math.round((Date.now() - started) / 1000);
+  const duration = `${Math.floor(seconds / 60)} min ${seconds % 60} s`;
+  await audit(pool, {
+    action: JOB_ACTIONS[job.action], result: code === 0 ? 'completed' : 'failed',
+    actor: 'Worker', actorRole: 'Aprovisionamiento',
+    resource: job.tenant.institution_name, reference: job.tenant.slug,
+    description: code === 0 ? `${DONE[job.action]} (${job.tenant.engine}).` : `Falló: ${error}`,
+    details: {
+      jobId: job.id, engine: job.tenant.engine, region: job.tenant.region, plan: job.tenant.plan_id, duration,
+      steps: steps.map((step) => `${step.number}. ${step.title}: ${step.status}${step.summary ? ` · ${step.summary}` : ''}`),
+    },
+  });
+  if (finalResult?.invitationStatus) {
+    await audit(pool, {
+      action: 'invitation', actor: 'Worker', actorRole: 'Aprovisionamiento',
+      resource: job.tenant.institution_name, reference: job.tenant.slug,
+      description: `Se generó el enlace de activación del administrador (${finalResult.invitationStatus}).`,
+    });
+  }
   console.log(`Trabajo ${job.id}: ${code === 0 ? 'terminado' : 'falló'}`);
 }
 

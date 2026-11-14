@@ -60,9 +60,14 @@ if ($Accion -eq 'crear') {
     # (cambiar la imagen recrearía los servidores y se perderían los datos).
     & aws cloudformation describe-stacks --region $Region --stack-name $stack @perfil *> $null
     if ($LASTEXITCODE -ne 0) {
-        $imagen = (Invoke-Aws ec2 describe-images --region $Region --owners self `
-            --filters 'Name=name,Values=asistencia-tenant-*' 'Name=state,Values=available' `
-            --query 'sort_by(Images,&CreationDate)[-1].ImageId' --output text | Out-String).Trim()
+        # Si la cuenta no deja buscar imágenes (política de la organización), se usa Amazon Linux.
+        $imagen = ''
+        try {
+            $imagen = (Invoke-Aws ec2 describe-images --region $Region --owners self `
+                --filters 'Name=name,Values=asistencia-tenant-*' 'Name=state,Values=available' `
+                --query 'sort_by(Images,&CreationDate)[-1].ImageId' --output text | Out-String).Trim()
+        }
+        catch { Write-Host "No se pudo buscar la imagen propia: $($_.Exception.Message)" }
         if ($imagen -match '^ami-') {
             Write-Host "Imagen propia (Packer): $imagen"
             $parametros += "ImagenPropia=$imagen"

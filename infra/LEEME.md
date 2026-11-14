@@ -23,8 +23,12 @@ monitoreo en Grafana.
 - **Aislamiento:** cada tenant está en su propia VPC. El peering no es transitivo:
   un tenant llega a la plataforma, pero no a otro tenant. Desde internet no se
   entra a ningún servidor de un tenant; todo pasa por el gateway.
-- **Regiones:** la plataforma está en us-east-2; un tenant puede estar en
-  us-east-1, us-east-2 o us-west-2 (peering entre regiones).
+- **Regiones:** tenants en us-east-2 (Ohio, junto a la plataforma), us-east-1 (Virginia)
+  o us-west-2 (Oregón), con peering entre regiones. La organización de la cuenta
+  (política `AdvancedModeRegionRestrictionSecurityControlPolicy`, editada en la cuenta
+  administradora) solo permite esas 3. El portal admite **2 tenants por región** (cuota
+  de 16 vCPU: cada tenant usa 6 y en Ohio la plataforma usa 4); se cambia con
+  `PLATFORM_TENANTS_PER_REGION`. Azure se muestra deshabilitado.
 - **Monitoreo automático:** Prometheus busca en AWS las instancias con la etiqueta
   `Proyecto=asistencia` y usa sus etiquetas (`Tenant`, `Plan`, `Rol`...). Un tenant
   nuevo aparece solo en Grafana.
@@ -93,9 +97,9 @@ El repo en WSL: `/mnt/d/Diplomado-2026/control-asistencia-academica/infra`.
    ```
    En us-east-2: VPC por defecto + plataforma + 3 tenants = 5. Repartir tenants en
    otras regiones también evita el límite.
-3. La cuenta está en el **plan gratuito** de AWS: solo admite algunos tipos de servidor
-   (`t3.micro`, `t3.small`, `c7i-flex.large`, `m7i-flex.large`...). Los planes ya los usan;
-   si pides otro tipo, Terraform avisa antes de crear nada. Ver la lista:
+3. Los planes usan tipos de la **capa gratuita** (`t3.micro`, `t3.small`, `c7i-flex.large`,
+   `m7i-flex.large`...). La cuenta ya es de pago por uso y admite otros tipos, pero estos
+   gastan menos créditos; si pides otro tipo, Terraform avisa antes de crear nada. Ver la lista:
    ```powershell
    aws ec2 describe-instance-types --region us-east-2 --filters Name=free-tier-eligible,Values=true --query "InstanceTypes[].InstanceType" --output table
    ```
@@ -144,7 +148,8 @@ winget install Hashicorp.Packer      # una vez
 cd D:\Diplomado-2026\control-asistencia-academica\infra\packer
 packer init .
 packer validate .
-packer build .                       # 15-20 min: construye la imagen en las 3 regiones a la vez
+packer build .                       # 15-20 min (una imagen en cada una de las 3 regiones)
+packer build -only="*.ohio" .        # solo una región
 ```
 
 | | Sin imagen | Con imagen |
@@ -250,15 +255,17 @@ Después de borrar un tenant, quita su ruta del gateway (WSL):
 `ansible vm-plataforma -i inventarios/plataforma.ini -b -m file -a "path=/etc/nginx/tenants/utepsa.conf state=absent"`
 y vuelve a ejecutar `plataforma.yml` (en la etapa 6 lo hará el portal).
 
-## Demo sugerida: 3 universidades, 3 motores, 2 regiones
+## Demo sugerida: 6 universidades, 3 regiones, 4 motores
 
-| Tenant | Motor | Región | numero |
-| --- | --- | --- | --- |
-| utepsa | Terraform | us-east-2 | 1 |
-| la-salle | Pulumi | us-east-2 | 2 |
-| uagrm | CloudFormation | us-west-2 | 3 |
+| Región | Tenants | Motores |
+| --- | --- | --- |
+| us-east-2 (Ohio) | uagrm, utepsa | Terraform, CloudFormation |
+| us-east-1 (Virginia) | la-salle, savio | Pulumi, OpenTofu |
+| us-west-2 (Oregón) | upsa, unifranz | Terraform, CloudFormation |
 
-En us-east-2 quedan 4 VPC (por defecto, plataforma y 2 tenants): no hace falta pedir más cuota.
+Cuotas por región: 5 VPC y **16 vCPU**. Ohio: VPC por defecto + plataforma + 2 tenants = 4
+VPC y 4 + 2 × 6 = 16 vCPU (justo al límite: con 2 tenants en Ohio, Packer no tiene lugar
+para su servidor temporal; construye la imagen antes). Virginia y Oregón: 12 vCPU cada una.
 
 ## Demostraciones
 
@@ -334,7 +341,28 @@ bash scripts/aprovisionar.sh crear --slug prueba --motor terraform --region us-e
 ls generado/tenants/<slug>/                   # checkov.json, trivy.json, plan.json, contraseñas...
 ```
 
+# Operar los tenants desde el portal (etapa 6)
+
+- **Suspender / Reanudar** (Instituciones → la institución → Infraestructura). El worker
+  ejecuta `aprovisionar.sh suspender|reanudar`: busca los 3 servidores por sus tags
+  (`Proyecto=asistencia`, `Tenant=<slug>`), los apaga o enciende (`stop/start-instances`)
+  y, al reanudar, espera a que `/api/health` responda. Los discos y la base se conservan;
+  suspendido no consume horas de cómputo ni vCPU de la cuota (los discos sí cuestan).
+  Funciona igual con los 4 motores porque no toca el estado de Terraform/Pulumi/CFN.
+- **Monitoreo**: el portal consulta a Prometheus (vm-monitoreo, puerto 9090 por la red
+  privada; regla `monitoreo_desde_portal`) las mismas métricas del panel de Grafana:
+  CPU, memoria, disco, API, latencia, peticiones, conexiones de la base, agentes y
+  alertas activas, por institución. Cada tarjeta enlaza a su panel en Grafana.
+- **Auditoría**: tabla `platform_audit` (migración 007). Registra inicios de sesión
+  (también los fallidos), solicitudes, registros, planes, invitaciones, activaciones y
+  cada trabajo del worker (inicio y fin, con motor, región, duración y pasos).
+
+Para aplicarla: `git push`, luego `terraform apply` en `infra\plataforma` (agrega la
+regla 9090 desde el portal; no recrea nada) y `ansible-playbook -i inventarios/plataforma.ini
+plataforma.yml` (variables `PLATFORM_PROMETHEUS_URL` / `PLATFORM_GRAFANA_URL`, migración y
+worker nuevo).
+
 ## Pendiente (siguientes etapas)
 
-- **Etapa 6:** suspender y reanudar tenants; monitoreo y auditoría del portal con datos reales.
+- **Respaldos** de la base de cada tenant y recuperación automática (alta disponibilidad barata).
 - **Trazas** de la app (OpenTelemetry → Tempo → Grafana).
