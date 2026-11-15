@@ -170,7 +170,7 @@ function PlanCards({ plans, provider, onSelect }: { plans: Plan[]; provider: Clo
         })}
       </ul>}
       <dl className="plan-storage">
-        <div><dt><Database size={15} aria-hidden="true" /> Datos PostgreSQL</dt><dd>{formatNumber(plan.databaseGb)} GB</dd></div>
+        <div><dt><Database size={15} aria-hidden="true" /> Base de datos</dt><dd>{formatNumber(plan.databaseGb)} GB</dd></div>
         <div><dt><ShieldCheck size={15} aria-hidden="true" /> Respaldo previsto</dt><dd>{plan.backup}</dd></div>
       </dl>
       <a className={`button ${plan.id === 'estandar' ? 'button-primary' : 'button-outline'}`} href="#solicitud" onClick={() => onSelect(plan.id)}>
@@ -201,13 +201,13 @@ function PlanComparison({ plans, provider }: { plans: Plan[]; provider: CloudPro
               </> : '—'}</td>
             })}
           </tr>)}
-          <tr><th scope="row">Disco de datos PostgreSQL</th>{plans.map((plan) => <td key={plan.id}>{formatNumber(plan.databaseGb)} GB</td>)}</tr>
+          <tr><th scope="row">Disco de la base de datos</th>{plans.map((plan) => <td key={plan.id}>{formatNumber(plan.databaseGb)} GB</td>)}</tr>
           <tr><th scope="row">Límite de estudiantes</th>{plans.map((plan) => <td key={plan.id}>{formatNumber(plan.limitStudents)}</td>)}</tr>
           <tr><th scope="row">Respaldo previsto</th>{plans.map((plan) => <td key={plan.id}>{plan.backup}</td>)}</tr>
         </tbody>
       </table>
     </div>
-    <p className="plan-comparison-note">El disco de datos de PostgreSQL se suma al disco de sistema de su instancia.</p>
+    <p className="plan-comparison-note">La base de datos PostgreSQL ocupa el disco del servidor de base de datos.</p>
   </section>
 }
 
@@ -291,7 +291,7 @@ function RequestForm({ plans, planId, setPlanId }: { plans: Plan[]; planId: stri
           {plans.map((plan) => <option value={plan.id} key={plan.id}>{plan.name} · {formatNumber(plan.limitStudents)} estudiantes</option>)}
         </select>
         {selectedPlan && <div className="request-plan-summary">
-          <Database size={16} aria-hidden="true" /> <span>{formatNumber(selectedPlan.databaseGb)} GB para datos PostgreSQL</span>
+          <Database size={16} aria-hidden="true" /> <span>{formatNumber(selectedPlan.databaseGb)} GB de disco para la base de datos</span>
           <a href="#comparacion-planes">Ver especificaciones</a>
         </div>}
         {formError && <p className="public-error" role="alert">{formError}</p>}

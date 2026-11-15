@@ -25,6 +25,15 @@ export interface InstallationStatus {
   invitationUpdatedAt?: string
 }
 
+export interface TenantInfrastructure {
+  state: 'none' | 'ready' | 'suspended' | 'failed'
+  deleted: boolean
+  activeAction?: 'create' | 'delete' | 'suspend' | 'resume'
+  lastAction?: 'create' | 'delete' | 'suspend' | 'resume'
+  lastStatus?: 'succeeded' | 'failed'
+  lastFinishedAt?: string
+}
+
 export interface TenantConfiguration extends InstallationStatus {
   id: string
   slug: string
@@ -32,6 +41,8 @@ export interface TenantConfiguration extends InstallationStatus {
   environment: string
   engine: string
   createdAt: string
+  networkNumber?: number
+  infrastructure?: TenantInfrastructure
 }
 
 export interface TrackedRequest {

@@ -1,7 +1,7 @@
 const express = require('express');
 const { createPool, migrate, transaction } = require('./db');
 const { InvitationError, allowedTenantOrigin, deliverInvitation, issueTenantInvitation, tenantIsActivated } = require('./invitations');
-const { ProvisioningError, createInstitution, latestJob, startJob } = require('./provisioning');
+const { ProvisioningError, createInstitution, infrastructureState, latestJob, startJob } = require('./provisioning');
 const { audit, listAudit } = require('./audit');
 const { monitoringSnapshot } = require('./monitoring');
 const {
@@ -20,10 +20,34 @@ const requestSelect = `
   SELECT r.id, r.institution_name, r.admin_name, r.admin_email, r.plan_id,
          r.status, r.created_at, r.updated_at,
          t.id AS tenant_id, t.slug, t.region, t.environment, t.engine,
-         t.created_at AS tenant_created_at, t.app_url, t.invitation_status, t.invitation_updated_at
+         t.created_at AS tenant_created_at, t.app_url, t.invitation_status, t.invitation_updated_at,
+         t.network_number, last.action AS last_action, last.status AS last_status,
+         last.finished_at AS last_finished_at, active.action AS active_action
   FROM platform_requests r
   LEFT JOIN platform_tenants t ON t.request_id = r.id
+  LEFT JOIN LATERAL (
+    SELECT action, status, finished_at FROM platform_jobs
+    WHERE tenant_id = t.id AND status IN ('succeeded', 'failed') ORDER BY created_at DESC LIMIT 1
+  ) last ON true
+  LEFT JOIN LATERAL (
+    SELECT action FROM platform_jobs
+    WHERE tenant_id = t.id AND status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 1
+  ) active ON true
 `;
+
+// Estado de la infraestructura para la lista y los filtros (RF-14). "deleted" distingue
+// una institución cuya infraestructura se eliminó de una que nunca la tuvo.
+function serializeInfrastructure(row) {
+  const last = row.last_action ? { action: row.last_action, status: row.last_status } : null;
+  return {
+    state: infrastructureState(last),
+    deleted: row.last_action === 'delete' && row.last_status === 'succeeded',
+    activeAction: row.active_action ?? undefined,
+    lastAction: row.last_action ?? undefined,
+    lastStatus: row.last_status ?? undefined,
+    lastFinishedAt: row.last_finished_at ?? undefined,
+  };
+}
 
 const planSelect = `
   SELECT p.id, p.name, p.description, p.limit_students AS "limitStudents", p.database_gb AS "databaseGb", p.backup,
@@ -65,6 +89,7 @@ function serializeRequest(row, includeContact = true) {
     request.tenant = includeContact ? {
       ...invitation, id: row.tenant_id, slug: row.slug, region: row.region,
       environment: row.environment, engine: row.engine, createdAt: row.tenant_created_at,
+      networkNumber: row.network_number ?? undefined, infrastructure: serializeInfrastructure(row),
     } : invitation;
   }
   return request;

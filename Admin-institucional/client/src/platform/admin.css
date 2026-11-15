@@ -340,3 +340,22 @@
   .pa-sidebar { transition: none; }
   .pa-spinner { animation: none; }
 }
+
+/* Estado de la infraestructura en la lista de instituciones (RF-14). */
+.pa-infra-ready { color: #226d48; background: #e4f7ec; }
+.pa-infra-busy { color: var(--pa-purple-dark); background: var(--pa-purple-soft); }
+.pa-infra-suspended { color: #805715; background: #fff1d5; }
+.pa-infra-failed { color: #a12a2a; background: #fdecec; }
+.pa-infra-deleted { color: #4f5563; background: #e9ebf0; }
+.pa-infra-none { color: var(--pa-muted); background: var(--pa-bg); border: 1px dashed var(--pa-line); }
+.pa-infra-spin { animation: pa-rotate .9s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .pa-infra-spin { animation: none; } }
+.pa-tenant-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.pa-tenant-filters select:first-child { grid-column: 1 / -1; }
+.pa-tenant-filters select { min-width: 0; font-size: 12px; }
+.pa-filters-clear {
+  grid-column: 1 / -1; justify-self: start; display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px;
+  border: 0; border-radius: 6px; background: transparent; color: var(--pa-purple-dark); font: inherit; font-size: 12px; font-weight: 650; cursor: pointer;
+}
+.pa-filters-clear:hover { background: var(--pa-purple-soft); }
+@media (max-width: 420px) { .pa-tenant-filters { grid-template-columns: minmax(0, 1fr); } }

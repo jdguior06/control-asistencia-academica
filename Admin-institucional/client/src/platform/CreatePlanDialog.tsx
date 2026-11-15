@@ -122,13 +122,13 @@ export default function CreatePlanDialog({ onClose, onCreated, onSessionExpired 
             <label className="pcd-field pcd-full"><span>Nombre</span><input ref={nameRef} name="name" maxLength={80} required /></label>
             <label className="pcd-field pcd-full"><span>Descripción</span><textarea name="description" maxLength={500} rows={2} required /></label>
             <label className="pcd-field"><span>Límite de estudiantes</span><input name="limitStudents" type="number" inputMode="numeric" min={1} max={maxInteger} step={1} defaultValue={100} required /></label>
-            <label className="pcd-field"><span>Disco de datos PostgreSQL (GB)</span><input name="databaseGb" type="number" inputMode="numeric" min={1} max={maxInteger} step={1} defaultValue={10} required /></label>
+            <label className="pcd-field"><span>Disco de la base de datos (GB)</span><input name="databaseGb" type="number" inputMode="numeric" min={1} max={maxInteger} step={1} defaultValue={20} required /></label>
             <label className="pcd-field pcd-backup"><span>Frecuencia de respaldo</span><input name="backup" maxLength={120} defaultValue="Semanal" required /></label>
           </div>
         </fieldset>
         <fieldset className="pcd-resources" disabled={busy}>
           <legend>Instancias de referencia</legend>
-          <p>Los discos del sistema se configuran por separado del disco de datos PostgreSQL.</p>
+          <p>El disco de la base de datos es el del servidor de base de datos (instancia "Base de datos").</p>
           <div className="pcd-resource-grid">
             {roleFields.map(fields => <InstanceFields key={fields.role} fields={fields} />)}
           </div>

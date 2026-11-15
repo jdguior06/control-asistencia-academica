@@ -17,6 +17,7 @@ import PlatformMonitoring from './PlatformMonitoring'
 import PlatformSettings from './PlatformSettings'
 import Provisioning from './Provisioning'
 import { engines, environments, optionLabel, regions, slugFromName, type Provider } from './tenant-options'
+import { infraStatus, infraStatusLabels, infraStatusText, type InfraStatus } from './infra-status'
 import './admin.css'
 
 type Filter = 'all' | 'pending' | 'registered'
@@ -121,6 +122,14 @@ function Status({ value }: { value: TenantRequest['status'] }) {
   </span>
 }
 
+function InfraBadge({ tenant }: { tenant?: TenantConfiguration }) {
+  const status = infraStatus(tenant?.infrastructure)
+  return <span className={`pa-status pa-infra-${status}`}>
+    {status === 'busy' ? <RefreshCw size={12} className="pa-infra-spin" /> : status === 'ready' ? <Check size={13} /> : null}
+    {infraStatusText(tenant?.infrastructure)}
+  </span>
+}
+
 const instanceRoles = {
   frontend: { label: 'Frontend', Icon: Monitor },
   backend: { label: 'Backend', Icon: Server },
@@ -153,7 +162,7 @@ function PlanInstances({ plan, provider }: { plan: Plan; provider?: Provider }) 
 function PlanResourceRows({ plan }: { plan: Plan }) {
   return <>
     <div><dt><GraduationCap size={15} /> Capacidad</dt><dd>{formatNumber(plan.limitStudents)} estudiantes</dd></div>
-    <div><dt><Database size={15} /> Disco de datos PostgreSQL</dt><dd>{formatNumber(plan.databaseGb)} GB</dd></div>
+    <div><dt><Database size={15} /> Disco de la base de datos</dt><dd>{formatNumber(plan.databaseGb)} GB</dd></div>
     <div><dt><ShieldCheck size={15} /> Respaldo</dt><dd>{plan.backup}</dd></div>
   </>
 }
@@ -300,8 +309,8 @@ function RequestDetail({ request, plan, onRegistered, onInvitationUpdated, onRel
             <div><dt>Entorno</dt><dd>{optionLabel(environments, request.tenant.environment)}</dd></div>
             <div><dt>Motor</dt><dd>{optionLabel(engines, request.tenant.engine)}</dd></div>
           </dl>}
-          {request.tenant && <Provisioning requestId={request.id} tenant={request.tenant} onFinished={onReload} onActiveChange={setProvisioning} onSessionExpired={onSessionExpired} />}
-          {request.tenant && !provisioning && <Installation requestId={request.id} tenant={request.tenant} onUpdated={onInvitationUpdated} onSessionExpired={onSessionExpired} />}
+          {request.tenant && <Provisioning requestId={request.id} tenant={request.tenant} plan={plan} onFinished={onReload} onActiveChange={setProvisioning} onSessionExpired={onSessionExpired} />}
+          {request.tenant && !provisioning && !request.tenant.infrastructure?.deleted && <Installation requestId={request.id} tenant={request.tenant} onUpdated={onInvitationUpdated} onSessionExpired={onSessionExpired} />}
         </section> : <form className="pa-register-form" onSubmit={register} aria-labelledby="pa-register-title">
           <h3 id="pa-register-title">Configurar institución</h3>
           <label htmlFor="pa-slug">Identificador único</label>
@@ -346,6 +355,9 @@ function Console({ user, onLogout }: { user: PlatformUser; onLogout: () => void 
   const restoreDialogFocus = useRef<HTMLButtonElement | null>(null)
   const [filter, setFilter] = useState<Filter>('all')
   const [query, setQuery] = useState('')
+  const [infraFilter, setInfraFilter] = useState<InfraStatus | 'all'>('all')
+  const [planFilter, setPlanFilter] = useState('all')
+  const [environmentFilter, setEnvironmentFilter] = useState('all')
   const [selectedId, setSelectedId] = useState<string>()
   const [requests, setRequests] = useState<TenantRequest[]>([])
   const [plans, setPlans] = useState<Plan[]>([])
@@ -386,9 +398,15 @@ function Console({ user, onLogout }: { user: PlatformUser; onLogout: () => void 
       const status = view === 'tenants' ? 'registered' : filter
       const matchesStatus = status === 'all' || request.status === status
       const searchable = [request.institutionName, request.adminName, request.adminEmail, request.tenant?.slug].join(' ').toLocaleLowerCase('es')
-      return matchesStatus && searchable.includes(search)
+      // RF-14: en Instituciones también por estado de la infraestructura, plan y entorno.
+      const matchesTenant = view !== 'tenants' || (
+        (infraFilter === 'all' || infraStatus(request.tenant?.infrastructure) === infraFilter)
+        && (planFilter === 'all' || request.planId === planFilter)
+        && (environmentFilter === 'all' || request.tenant?.environment === environmentFilter))
+      return matchesStatus && matchesTenant && searchable.includes(search)
     })
-  }, [requests, query, view, filter])
+  }, [requests, query, view, filter, infraFilter, planFilter, environmentFilter])
+  const tenantFiltersActive = infraFilter !== 'all' || planFilter !== 'all' || environmentFilter !== 'all'
   const selected = visibleRequests.find(request => request.id === selectedId) ?? visibleRequests[0]
   const selectedPlan = plans.find(plan => plan.id === selected?.planId)
   const activeNav = navigation.find(item => item.id === view)!
@@ -530,7 +548,7 @@ function Console({ user, onLogout }: { user: PlatformUser; onLogout: () => void 
           onTenants={() => changeView('tenants')} onPlans={() => changeView('plans')}
           onRequest={id => showRequests('all', id)} /> : view === 'plans' ? <div className="pa-plans">
           {plans.map(plan => <article className="pa-card pa-plan-card" key={plan.id}><span className="pa-icon-tile"><Layers3 size={21} /></span><h2>{plan.name}</h2><p>{plan.description}</p>
-            <dl><div><dt>Capacidad</dt><dd>{formatNumber(plan.limitStudents)} estudiantes</dd></div><div><dt>Disco de datos PostgreSQL</dt><dd>{formatNumber(plan.databaseGb)} GB</dd></div><div><dt>Respaldo</dt><dd>{plan.backup}</dd></div></dl>
+            <dl><div><dt>Capacidad</dt><dd>{formatNumber(plan.limitStudents)} estudiantes</dd></div><div><dt>Disco de la base de datos</dt><dd>{formatNumber(plan.databaseGb)} GB</dd></div><div><dt>Respaldo</dt><dd>{plan.backup}</dd></div></dl>
             <PlanInstances plan={plan} />
           </article>)}
           {plans.length === 0 && <div className="pa-card pa-empty">El catálogo está vacío.</div>}
@@ -548,16 +566,35 @@ function Console({ user, onLogout }: { user: PlatformUser; onLogout: () => void 
                 {view === 'requests' && <select aria-label="Filtrar por estado" value={filter} onChange={event => setFilter(event.target.value as Filter)}>
                   <option value="all">Todos los estados</option><option value="pending">Pendientes</option><option value="registered">Registradas</option>
                 </select>}
+                {view === 'tenants' && <div className="pa-tenant-filters">
+                  <select aria-label="Filtrar por estado de la infraestructura" value={infraFilter} onChange={event => setInfraFilter(event.target.value as InfraStatus | 'all')}>
+                    <option value="all">Estado: todos</option>
+                    {(Object.keys(infraStatusLabels) as InfraStatus[]).map(status => <option key={status} value={status}>{infraStatusLabels[status]}</option>)}
+                  </select>
+                  <select aria-label="Filtrar por plan" value={planFilter} onChange={event => setPlanFilter(event.target.value)}>
+                    <option value="all">Plan: todos</option>
+                    {plans.map(plan => <option key={plan.id} value={plan.id}>{plan.name}</option>)}
+                  </select>
+                  <select aria-label="Filtrar por entorno" value={environmentFilter} onChange={event => setEnvironmentFilter(event.target.value)}>
+                    <option value="all">Entorno: todos</option>
+                    {environments.map(environment => <option key={environment.value} value={environment.value}>{environment.label}</option>)}
+                  </select>
+                  {tenantFiltersActive && <button type="button" className="pa-filters-clear" onClick={() => { setInfraFilter('all'); setPlanFilter('all'); setEnvironmentFilter('all') }}>
+                    <X size={14} /> Quitar filtros
+                  </button>}
+                </div>}
               </div>
               {visibleRequests.length > 0 ? <ul>
                 {visibleRequests.map(request => <li key={request.id}>
                   <button type="button" aria-pressed={selected?.id === request.id} onClick={() => setSelectedId(request.id)}>
-                    <span className="pa-row-text"><strong>{request.institutionName}</strong><small>{plans.find(plan => plan.id === request.planId)?.name ?? request.planId} · {formatDate(request.createdAt)}</small></span>
+                    <span className="pa-row-text"><strong>{request.institutionName}</strong><small>{view === 'tenants' && request.tenant
+                      ? `${plans.find(plan => plan.id === request.planId)?.name ?? request.planId} · ${optionLabel(environments, request.tenant.environment)} · ${request.tenant.slug}`
+                      : `${plans.find(plan => plan.id === request.planId)?.name ?? request.planId} · ${formatDate(request.createdAt)}`}</small></span>
                     <ChevronRight size={16} />
-                    <Status value={request.status} />
+                    {view === 'tenants' ? <InfraBadge tenant={request.tenant} /> : <Status value={request.status} />}
                   </button>
                 </li>)}
-              </ul> : <div className="pa-empty"><ClipboardList size={24} /><p>{query || (view === 'requests' && filter !== 'all') ? 'No hay resultados para los filtros.' : view === 'tenants' ? 'Todavía no hay instituciones registradas.' : 'Todavía no hay solicitudes.'}</p></div>}
+              </ul> : <div className="pa-empty"><ClipboardList size={24} /><p>{query || (view === 'requests' && filter !== 'all') || (view === 'tenants' && tenantFiltersActive) ? 'No hay resultados para los filtros.' : view === 'tenants' ? 'Todavía no hay instituciones registradas.' : 'Todavía no hay solicitudes.'}</p></div>}
             </section>
             {selected ? <RequestDetail key={selected.id} request={selected} plan={selectedPlan} onRegistered={onRegistered} onInvitationUpdated={onInvitationUpdated} onReload={reloadRequests} onSessionExpired={onLogout} /> : <section className="pa-card pa-empty pa-empty-detail"><span className="pa-icon-tile"><Building2 size={24} /></span><h2>Detalles de la institución</h2><p>Selecciona una institución para ver su información.</p></section>}
           </div>

@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { AlertTriangle, Check, CircleAlert, Clock3, ExternalLink, LoaderCircle, Pause, Play, Power, RotateCcw, ServerCog, Trash2, X } from 'lucide-react'
-import { ApiError, api, errorMessage, formatDate, webLink, type JobStep, type ProvisioningJob, type TenantConfiguration } from './api'
-import { regions } from './tenant-options'
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react'
+import {
+  AlertTriangle, ArrowDownToLine, Check, CircleAlert, Clock3, Copy, Download, ExternalLink, LoaderCircle, Maximize2, Pause, Play,
+  Power, RotateCcw, ServerCog, Terminal, Trash2, X,
+} from 'lucide-react'
+import { ApiError, api, errorMessage, formatDate, webLink, type JobStep, type Plan, type ProvisioningJob, type TenantConfiguration } from './api'
+import { engines, optionLabel, regions } from './tenant-options'
 import './provisioning.css'
 
 // Infraestructura de una institución: la crea o la elimina el worker de la plataforma
@@ -28,7 +31,7 @@ function jobLabel(job: ProvisioningJob | null) {
   const text = verbs[job.action][job.status]
   if (job.status === 'queued' || job.status === 'running') return { text, tone: 'busy' }
   if (job.status === 'failed') return { text, tone: 'error' }
-  if (job.action === 'delete') return { text, tone: 'idle' }
+  if (job.action === 'delete') return { text, tone: 'deleted' }
   return { text, tone: job.action === 'suspend' ? 'paused' : 'ok' }
 }
 
@@ -45,9 +48,119 @@ function infrastructureState(job: ProvisioningJob | null): State {
   }
 }
 
-export default function Provisioning({ requestId, tenant, onFinished, onActiveChange, onSessionExpired }: {
+// El registro en grande: se actualiza en vivo mientras el trabajo corre.
+function LogDialog({ job, slug, active, onClose }: {
+  job: ProvisioningJob
+  slug: string
+  active: boolean
+  onClose: () => void
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null)
+  const logRef = useRef<HTMLPreElement>(null)
+  const [follow, setFollow] = useState(true)
+  const [copied, setCopied] = useState(false)
+  const titleId = useId()
+  const label = jobLabel(job)
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (!dialog) return
+    dialog.showModal()
+    return () => { if (dialog.open) dialog.close() }
+  }, [])
+
+  useEffect(() => {
+    const log = logRef.current
+    if (log && follow) log.scrollTop = log.scrollHeight
+  }, [job.log, follow])
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(job.log)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1800)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  function download() {
+    const url = URL.createObjectURL(new Blob([job.log], { type: 'text/plain;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${slug}-${job.action}-${(job.startedAt ?? job.createdAt ?? '').slice(0, 16).replace(/[:T]/g, '-') || 'registro'}.log`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return <dialog ref={dialogRef} className="pv-log-dialog" aria-labelledby={titleId}
+    onCancel={event => { event.preventDefault(); onClose() }}
+    onClick={event => { if (event.target === event.currentTarget) onClose() }}>
+    <header className="pv-log-dialog-header">
+      <span className="pv-log-dialog-icon"><Terminal size={18} aria-hidden="true" /></span>
+      <div>
+        <h2 id={titleId}>Registro del trabajo · {slug}</h2>
+        <p>
+          <span className={`pv-badge pv-badge-${label.tone}`}>
+            {label.tone === 'busy' ? <LoaderCircle size={12} className="pv-spin" aria-hidden="true" /> : null}{label.text}
+          </span>
+          {job.startedAt && <time dateTime={job.startedAt}>{formatDate(job.startedAt)}</time>}
+          <span>{job.log.split('\n').length} líneas</span>
+        </p>
+      </div>
+      <button type="button" className="pv-log-dialog-close" onClick={onClose} aria-label="Cerrar registro"><X size={18} /></button>
+    </header>
+    <pre ref={logRef} className="pv-log-dialog-body" tabIndex={0} onScroll={event => {
+      const log = event.currentTarget
+      const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 40
+      if (atEnd !== follow) setFollow(atEnd)
+    }}>{job.log}</pre>
+    <footer className="pv-log-dialog-footer">
+      {active && !follow && <button type="button" className="pa-secondary" onClick={() => setFollow(true)}>
+        <ArrowDownToLine size={15} /> Ir al final
+      </button>}
+      <button type="button" className="pa-secondary" onClick={() => void copy()}>
+        {copied ? <><Check size={15} /> Copiado</> : <><Copy size={15} /> Copiar</>}
+      </button>
+      <button type="button" className="pa-secondary" onClick={download}><Download size={15} /> Descargar .log</button>
+      <button type="button" className="pa-primary" onClick={onClose}>Cerrar</button>
+    </footer>
+  </dialog>
+}
+
+const roleLabels = { frontend: 'frontend', backend: 'backend (API)', database: 'base de datos' } as const
+
+const engineState = {
+  terraform: (slug: string) => `estado de Terraform (s3://…/tenants/${slug}/terraform.tfstate)`,
+  opentofu: (slug: string) => `estado de OpenTofu (s3://…/tenants/${slug}/terraform.tfstate)`,
+  pulumi: (slug: string) => `stack de Pulumi "${slug}" (backend S3)`,
+  cloudformation: (slug: string) => `stacks de CloudFormation "tenant-${slug}" y "tenant-${slug}-ruta"`,
+} as Record<string, (slug: string) => string>
+
+// RF-18: antes de eliminar, la lista concreta de recursos y datos que se borran y lo que se conserva.
+function DeletionSummary({ tenant, plan }: { tenant: TenantConfiguration; plan?: Plan }) {
+  const network = tenant.networkNumber ? `10.${tenant.networkNumber}.0.0/16` : 'propia'
+  const region = optionLabel(regions, tenant.region).split(' (')[0]
+  return <div className="pv-delete-summary">
+    <p>Se eliminan en <strong>{region}</strong> ({tenant.region}), con <strong>{optionLabel(engines, tenant.engine)}</strong>:</p>
+    <ul>
+      <li><strong>Red</strong>: VPC {network}, subred, tabla de rutas, internet gateway y grupos de seguridad.</li>
+      <li><strong>Conexión con la plataforma</strong>: peering y la ruta de retorno en la VPC de la plataforma.</li>
+      <li><strong>3 servidores</strong>:{plan?.instances.length
+        ? <ul>{plan.instances.map(instance => <li key={instance.role}>{roleLabels[instance.role]}: {instance.awsType}, disco de {instance.systemDiskGb} GB</li>)}</ul>
+        : ' frontend, backend y base de datos, con sus discos.'}</li>
+      <li><strong>Datos</strong>: la base de datos PostgreSQL con usuarios, módulos, estudiantes y asistencias (está en el disco del servidor de base de datos).</li>
+      <li><strong>Acceso</strong>: la ruta <code>{tenant.slug}.…nip.io</code> del gateway y su monitoreo en Prometheus y Grafana.</li>
+      <li><strong>Estado del motor</strong>: {engineState[tenant.engine]?.(tenant.slug) ?? 'el estado del motor'}.</li>
+    </ul>
+    <p>Se conservan: el registro de la institución en el portal, el historial de trabajos y la auditoría, y sus contraseñas archivadas en <code>generado/borrados/</code> del servidor de la plataforma.</p>
+  </div>
+}
+
+export default function Provisioning({ requestId, tenant, plan, onFinished, onActiveChange, onSessionExpired }: {
   requestId: string
   tenant: TenantConfiguration
+  plan?: Plan
   onFinished: () => void
   onActiveChange: (active: boolean) => void
   onSessionExpired: () => void
@@ -58,6 +171,7 @@ export default function Provisioning({ requestId, tenant, onFinished, onActiveCh
   const [error, setError] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmation, setConfirmation] = useState('')
+  const [logOpen, setLogOpen] = useState(false)
   const logRef = useRef<HTMLPreElement>(null)
   const followLog = useRef(true)
   const active = job?.status === 'queued' || job?.status === 'running'
@@ -116,6 +230,7 @@ export default function Provisioning({ requestId, tenant, onFinished, onActiveCh
       setJob(result.job)
       setConfirmDelete(false)
       setConfirmation('')
+      onFinished() // la lista de instituciones muestra el trabajo en curso
     } catch (cause) {
       handleError(cause, 'No se pudo iniciar el trabajo. Intenta de nuevo.')
     } finally {
@@ -167,11 +282,15 @@ export default function Provisioning({ requestId, tenant, onFinished, onActiveCh
 
       {job && job.log && <details className="pv-log" open={active}>
         <summary>Registro del trabajo {job.startedAt && <time dateTime={job.startedAt}>· {formatDate(job.startedAt)}</time>}</summary>
-        <pre ref={logRef} tabIndex={0} onScroll={event => {
+        <button type="button" className="pv-log-expand" onClick={() => setLogOpen(true)} aria-haspopup="dialog">
+          <Maximize2 size={13} aria-hidden="true" /> Ver en grande
+        </button>
+        <pre ref={logRef} tabIndex={0} title="Doble clic para ver en grande" onDoubleClick={() => setLogOpen(true)} onScroll={event => {
           const log = event.currentTarget
           followLog.current = log.scrollHeight - log.scrollTop - log.clientHeight < 40
         }}>{job.log}</pre>
       </details>}
+      {logOpen && job && <LogDialog job={job} slug={tenant.slug} active={active} onClose={() => setLogOpen(false)} />}
 
       {error && <div className="pa-error" role="alert"><CircleAlert size={17} /><span>{error}</span></div>}
 
@@ -192,7 +311,9 @@ export default function Provisioning({ requestId, tenant, onFinished, onActiveCh
       </div>
 
       {confirmDelete && <form className="pa-register-form pv-confirm" onSubmit={event => void start('deprovision', event)} autoComplete="off">
-        <p>Se borran la red, los 3 servidores y <strong>los datos de la base</strong> de esta institución. No se puede deshacer.</p>
+        <h4>Antes de eliminar, revisa lo que se borra</h4>
+        <DeletionSummary tenant={tenant} plan={plan} />
+        <p className="pv-confirm-warning"><strong>No se puede deshacer:</strong> los datos de la base se pierden.</p>
         <label htmlFor="pv-confirm">Escribe <code>{tenant.slug}</code> para confirmar</label>
         <input id="pv-confirm" value={confirmation} onChange={event => setConfirmation(event.target.value)} spellCheck={false} required />
         <div className="pa-invite-actions">

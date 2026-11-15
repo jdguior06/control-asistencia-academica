@@ -48,3 +48,55 @@
 .pv-spin { animation: pa-rotate .9s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .pv-spin { animation: none; } }
 .pv-badge-paused { color: #805715; background: #fff1d5; }
+
+/* Registro en grande (modal). */
+.pv-log { position: relative; }
+.pv-log-expand {
+  position: absolute; top: -2px; right: 0; display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 7px; border: 0; border-radius: 6px; background: transparent;
+  color: var(--pa-purple-dark); font: inherit; font-size: 12px; font-weight: 650; cursor: pointer;
+}
+.pv-log-expand:hover { background: var(--pa-purple-soft); }
+.pv-log pre { cursor: zoom-in; }
+.pv-log summary { padding-right: 112px; }
+
+.pv-log-dialog {
+  width: min(1180px, calc(100% - 32px)); max-width: none; height: calc(100dvh - 48px); max-height: none;
+  margin: auto; padding: 0; overflow: hidden; border: 0; border-radius: 16px;
+  background: #fff; color: var(--pa-ink); box-shadow: 0 24px 70px #1a0f3366;
+}
+.pv-log-dialog[open] { display: flex; flex-direction: column; }
+.pv-log-dialog::backdrop { background: #23164096; }
+.pv-log-dialog-header {
+  display: grid; flex: none; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px;
+  padding: 13px 16px; border-bottom: 1px solid var(--pa-line);
+}
+.pv-log-dialog-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: #17142a; color: #c9b8ff; }
+.pv-log-dialog-header h2 { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
+.pv-log-dialog-header p { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 3px !important; color: var(--pa-muted); font-size: 12px; }
+.pv-log-dialog-close { display: grid; place-items: center; width: 34px; height: 34px; border: 0; border-radius: 9px; background: transparent; color: var(--pa-muted); cursor: pointer; }
+.pv-log-dialog-close:hover { background: var(--pa-bg); color: var(--pa-ink); }
+.pv-log-dialog-body {
+  flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 14px 18px;
+  background: #17142a; color: #e7e3f5; font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4;
+}
+.pv-log-dialog-body:focus-visible { outline: 2px solid #8d64ed; outline-offset: -2px; }
+.pv-log-dialog-footer { display: flex; flex: none; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 11px 16px; border-top: 1px solid var(--pa-line); }
+.pv-log-dialog-footer button { display: inline-flex; align-items: center; gap: 6px; }
+
+@media (max-width: 640px) {
+  .pv-log-dialog { width: 100%; height: 100dvh; border-radius: 0; }
+  .pv-log-dialog-body { padding: 10px 12px; font-size: 11.5px; }
+  .pv-log-dialog-footer { justify-content: stretch; }
+  .pv-log-dialog-footer button { flex: 1 1 auto; justify-content: center; }
+}
+
+/* Infraestructura eliminada (RF-14) y resumen antes de eliminar (RF-18). */
+.pv-badge-deleted { color: #4f5563; background: #e9ebf0; text-decoration: none; }
+.pv-confirm h4 { margin: 0 0 8px; color: #7c2020; font-size: 13px; }
+.pv-delete-summary { margin-bottom: 10px; color: #4a1c1c; font-size: 12px; line-height: 1.5; }
+.pv-delete-summary p { margin: 0 0 6px !important; color: inherit !important; }
+.pv-delete-summary > ul { display: grid; gap: 4px; margin: 0 0 8px; padding-left: 18px; }
+.pv-delete-summary ul ul { margin: 3px 0 0; padding-left: 16px; }
+.pv-confirm .pv-confirm-warning { margin-top: 4px !important; }

@@ -174,7 +174,7 @@ export default function CreateTenantDialog({ plans, usedSlugs, onClose, onCreate
                     <strong>{item.name}</strong>
                   </span>
                   <span>{formatNumber(item.limitStudents)} estudiantes</span>
-                  <span>{formatNumber(item.databaseGb)} GB de datos</span>
+                  <span>{formatNumber(item.databaseGb)} GB de base de datos</span>
                   <span>Respaldo {item.backup.toLocaleLowerCase('es')}</span>
                 </label>)}
               </div> : <p className="pct-help">Crea un plan en el catálogo para continuar.</p>}
@@ -217,7 +217,7 @@ export default function CreateTenantDialog({ plans, usedSlugs, onClose, onCreate
           </dl>
           {plan && <div className="pct-review-plan">
             <h4>Plan {plan.name}</h4>
-            <p>{formatNumber(plan.limitStudents)} estudiantes · {formatNumber(plan.databaseGb)} GB de datos · Respaldo {plan.backup.toLocaleLowerCase('es')}</p>
+            <p>{formatNumber(plan.limitStudents)} estudiantes · {formatNumber(plan.databaseGb)} GB de base de datos · Respaldo {plan.backup.toLocaleLowerCase('es')}</p>
           </div>}
         </section>}
       </div>

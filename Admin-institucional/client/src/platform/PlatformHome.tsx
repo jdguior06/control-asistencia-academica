@@ -58,7 +58,7 @@ export default function PlatformHome({ requests, plans, onPending, onRequests, o
           {plans.slice(0, 5).map(plan => <li className="pah-plan" key={plan.id}>
             <span className="pah-plan-icon"><Layers3 size={17} aria-hidden="true" /></span>
             <span className="pah-request-info"><strong>{plan.name}</strong><span>Hasta {formatNumber(plan.limitStudents)} estudiantes</span></span>
-            <span className="pah-plan-storage">{formatNumber(plan.databaseGb)} GB de datos</span>
+            <span className="pah-plan-storage">{formatNumber(plan.databaseGb)} GB de base de datos</span>
           </li>)}
         </ul> : <p className="pah-empty">El catálogo está vacío.</p>}
       </section>
