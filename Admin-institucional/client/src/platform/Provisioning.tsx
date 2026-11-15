@@ -48,6 +48,31 @@ function infrastructureState(job: ProvisioningJob | null): State {
   }
 }
 
+// RF-13: versiones de la app, la plantilla y las herramientas usadas en el trabajo.
+function shortDate(iso?: string) {
+  if (!iso) return ''
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? '' : ` · ${formatDate(iso)}`
+}
+
+function JobVersions({ versions }: { versions: Record<string, string> }) {
+  const v = versions
+  const rows: [string, string | undefined][] = [
+    ['Código', v.repo_commit && `rama ${v.repo_rama ?? '?'} · commit ${v.repo_commit}${shortDate(v.repo_fecha)}`],
+    ['Aplicación', (v.app_commit || v.app_desplegada) && `admin-docente-alumno · commit ${v.app_desplegada ?? v.app_commit}${v.app_version ? ` · v${v.app_version}` : ''}${v.app_desplegada ? ' (desplegado)' : ''}`],
+    ['Plantilla', v.plantilla && `${v.plantilla} · commit ${v.plantilla_commit ?? '?'}${v.plantilla_hash ? ` · sha256 ${v.plantilla_hash}` : ''}`],
+    ['Motor', v.motor_version && `${optionLabel(engines, v.motor ?? '')} ${v.motor_version}${v.proveedor_aws ? ` · proveedor AWS ${v.proveedor_aws}` : ''}`],
+    ['Ansible', (v.ansible || v.ansible_commit) && `${v.ansible ? `ansible-core ${v.ansible}` : ''}${v.ansible && v.ansible_commit ? ' · ' : ''}${v.ansible_commit ? `tareas commit ${v.ansible_commit}` : ''}`],
+    ['Imagen', v.imagen && (v.imagen_nombre ? `${v.imagen_nombre} (${v.imagen})` : v.imagen)],
+    ['AWS CLI', v.aws_cli],
+    ['Escáneres', ['checkov', 'trivy', 'gitleaks', 'conftest', 'tflint', 'cfn_lint'].filter(key => v[key]).map(key => `${key.replace('_', '-')} ${v[key]}`).join(' · ') || undefined],
+  ]
+  return <details className="pv-versions">
+    <summary>Versiones usadas en este trabajo</summary>
+    <dl>{rows.filter(([, value]) => value).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+  </details>
+}
+
 // El registro en grande: se actualiza en vivo mientras el trabajo corre.
 function LogDialog({ job, slug, active, onClose }: {
   job: ProvisioningJob
@@ -279,6 +304,8 @@ export default function Provisioning({ requestId, tenant, plan, onFinished, onAc
         {previewUrl && <a className="pa-preview-link" href={previewUrl} target="_blank" rel="noreferrer">Abrir invitación del administrador <ExternalLink size={14} /><small>Vista previa: el correo no se envía en la demo</small></a>}
         {job.result?.invitationError && <p className="pv-note">La invitación no se pudo preparar ({job.result.invitationError}). Puedes reenviarla abajo.</p>}
       </div>}
+
+      {job?.versions && <JobVersions versions={job.versions} />}
 
       {job && job.log && <details className="pv-log" open={active}>
         <summary>Registro del trabajo {job.startedAt && <time dateTime={job.startedAt}>· {formatDate(job.startedAt)}</time>}</summary>

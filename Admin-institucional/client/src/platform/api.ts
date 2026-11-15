@@ -78,6 +78,7 @@ export interface ProvisioningJob {
   status: JobStatus
   steps: JobStep[]
   log: string
+  versions?: Record<string, string>
   result?: { url?: string; motor?: string; previewUrl?: string; invitationStatus?: InvitationStatus; invitationError?: string }
   error?: string
   createdAt: string

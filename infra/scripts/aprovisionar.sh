@@ -15,6 +15,7 @@
 # Cada paso imprime marcas que el portal convierte en la lista de pasos:
 #   ::paso::N::Título   ::ok::N::resumen   ::aviso::N::resumen   ::error::N::motivo
 #   ::resultado::{json}  (al final)
+#   ::versiones::{json}  versiones de la app, las plantillas y las herramientas (RF-13)
 # Las advertencias de los escáneres NO detienen la creación; sí la detienen un
 # secreto encontrado por Gitleaks o una regla "deny" de las políticas (politicas/).
 set -Eeuo pipefail
@@ -85,6 +86,61 @@ done
 mkdir -p "$GEN"
 echo "Tenant $slug · motor $motor · región $region · plan $plan · red 10.$numero.0.0/16 · $slug.$DOMINIO"
 ok "$slug · 10.$numero.0.0/16 · $plan · $region · $motor"
+
+# ------------------------------------------------------------------ versiones (RF-13)
+# Qué código, qué plantilla y qué herramientas usa este trabajo. El worker las guarda con
+# el trabajo y se ven en el portal (Infraestructura → Versiones) y en la auditoría.
+REPO=$(cd "$INFRA/.." && pwd)
+commit_de() { git -C "$REPO" log -1 --format=%h -- "$@" 2>/dev/null || true; }
+version_de() { "$@" 2>&1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 || true; }
+versiones() { # versiones clave=valor ... → ::versiones::{"clave": "valor"} (sin valores vacíos)
+  python3 -c 'import json,sys
+d={}
+for par in sys.argv[1:]:
+    k,_,v=par.partition("=")
+    if v.strip(): d[k]=v.strip()
+print("::versiones::"+json.dumps(d, ensure_ascii=False))' "$@"
+}
+case $motor in
+  terraform)      motor_version=$(version_de terraform version) ;;
+  opentofu)       motor_version=$(version_de tofu version) ;;
+  pulumi)         motor_version=$(version_de pulumi version) ;;
+  cloudformation) motor_version=$(version_de aws --version) ;;
+esac
+proveedor=""
+if [[ $motor =~ ^(terraform|opentofu)$ && -f $DIR/.terraform.lock.hcl ]]; then
+  proveedor=$(grep -A1 'hashicorp/aws"' "$DIR/.terraform.lock.hcl" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+elif [[ $motor == pulumi && -f $DIR/package-lock.json ]]; then
+  proveedor=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["packages"]["node_modules/@pulumi/aws"]["version"])' "$DIR/package-lock.json" 2>/dev/null || true)
+fi
+plantilla_hash=$(cat "$DIR"/*.tf "$DIR"/*.ts "$DIR"/*.yaml 2>/dev/null | sha256sum | cut -c1-12 || true)
+herramientas=(
+  "repo_commit=$(git -C "$REPO" rev-parse --short=12 HEAD 2>/dev/null || true)"
+  "repo_rama=$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  "repo_fecha=$(git -C "$REPO" log -1 --format=%cI 2>/dev/null || true)"
+  "app_commit=$(commit_de admin-docente-alumno)"
+  "app_version=$(json "$REPO/admin-docente-alumno/server/package.json" version 2>/dev/null || true)"
+  "plantilla=${DIR#"$REPO"/}"
+  "plantilla_commit=$(commit_de "$DIR")"
+  "plantilla_hash=$plantilla_hash"
+  "ansible_commit=$(commit_de infra/ansible)"
+  "motor=$motor"
+  "motor_version=$motor_version"
+  "proveedor_aws=$proveedor"
+  "aws_cli=$(version_de aws --version)"
+)
+if [[ $accion == crear ]]; then
+  herramientas+=(
+    "ansible=$(version_de ansible --version)"
+    "checkov=$(version_de checkov --version)"
+    "trivy=$(version_de trivy --version)"
+    "gitleaks=$(version_de gitleaks version)"
+    "conftest=$(version_de conftest --version)"
+  )
+  [[ $motor =~ ^(terraform|opentofu)$ ]] && herramientas+=("tflint=$(version_de tflint --version)")
+  [[ $motor == cloudformation ]] && herramientas+=("cfn_lint=$(version_de cfn-lint --version)")
+fi
+versiones "${herramientas[@]}"
 
 # ==================================================================== suspender / reanudar
 # Igual para los 4 motores: se apagan o encienden los servidores con la etiqueta del
@@ -431,7 +487,13 @@ esac
 SALIDA="$INFRA/generado/tenants/$slug.json"
 [[ -f $SALIDA ]] || fallar "el motor no dejó generado/tenants/$slug.json"
 imagen=$(json "$SALIDA" imagen 2>/dev/null || echo "")
-ok "red 10.$numero.0.0/16, peering y 3 servidores · imagen ${imagen:-?}"
+imagen_nombre=""
+if [[ $imagen == ami-* ]]; then
+  imagen_nombre=$(aws ec2 describe-images --region "$region" --image-ids "$imagen" --query 'Images[0].Name' --output text 2>/dev/null || true)
+  [[ $imagen_nombre == None ]] && imagen_nombre=""
+fi
+versiones "imagen=$imagen" "imagen_nombre=$imagen_nombre"
+ok "red 10.$numero.0.0/16, peering y 3 servidores · imagen ${imagen_nombre:-${imagen:-?}}"
 
 # ==================================================================== 5. ansible
 paso 5 "Configurar con Ansible"
@@ -441,6 +503,10 @@ cd "$INFRA/ansible"
 inicio=$SECONDS
 ANSIBLE_STDOUT_CALLBACK=default ANSIBLE_DISPLAY_SKIPPED_HOSTS=false \
   ansible-playbook -i "inventarios/$slug.ini" tenant.yml -e tenant_invitacion=true
+# Commit de la app que quedó en los servidores (lo escribe tenant.yml).
+if [[ -f $GEN/version-app.json ]]; then
+  versiones "app_desplegada=$(json "$GEN/version-app.json" backend 2>/dev/null | cut -c1-12 || true)"
+fi
 ok "app, base de datos, agentes y ruta en el gateway ($(( (SECONDS - inicio) / 60 )) min)"
 
 # ==================================================================== 6. verificar

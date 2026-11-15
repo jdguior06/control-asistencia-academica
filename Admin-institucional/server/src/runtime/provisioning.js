@@ -20,7 +20,7 @@ const TENANTS_PER_REGION = Number(process.env.PLATFORM_TENANTS_PER_REGION) || 2;
 const PROVISIONABLE_PLANS = ['basico', 'estandar', 'avanzado'];
 
 const jobSelect = `
-  SELECT j.id, j.action, j.status, j.steps, j.log, j.result, j.error,
+  SELECT j.id, j.action, j.status, j.steps, j.log, j.result, j.error, j.versions,
          j.created_at, j.started_at, j.finished_at
   FROM platform_jobs j
 `;
@@ -35,6 +35,7 @@ function serializeJob(row) {
     log: row.log,
     result: row.result ?? undefined,
     error: row.error ?? undefined,
+    versions: row.versions && Object.keys(row.versions).length ? row.versions : undefined,
     createdAt: row.created_at,
     startedAt: row.started_at ?? undefined,
     finishedAt: row.finished_at ?? undefined,

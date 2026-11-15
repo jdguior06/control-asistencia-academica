@@ -134,6 +134,18 @@
   hosts: plataforma
   gather_facts: false
   tasks:
+    # RF-13: commit de la app que quedó en el backend y el frontend. El script del worker
+    # lo agrega a las versiones del trabajo (se ven en el portal y en la auditoría).
+    - name: Commit desplegado de la app
+      ansible.builtin.copy:
+        dest: "{{ tenant_secretos }}/version-app.json"
+        mode: "0644"
+        content: "{{ {'repo': app_repo, 'rama': app_rama,
+                      'backend': hostvars[groups['backend'][0]].codigo_git.after | default(''),
+                      'frontend': hostvars[groups['frontend'][0]].codigo_git.after | default('')} | to_nice_json }}\n"
+      delegate_to: localhost
+      run_once: true
+
     - name: Dirección del tenant
       ansible.builtin.debug:
         msg:

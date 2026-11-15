@@ -30,6 +30,8 @@ const results = {
 const detailLabels: Record<string, string> = {
   jobId: 'Trabajo', engine: 'Motor', region: 'Región', plan: 'Plan', environment: 'Entorno',
   duration: 'Duración', ip: 'Dirección IP', email: 'Correo', status: 'Estado',
+  commit: 'Código (rama y commit)', app: 'Aplicación', template: 'Plantilla', engineVersion: 'Motor',
+  ansible: 'Ansible', image: 'Imagen (Packer)', scanners: 'Escáneres',
 }
 
 const POLL_MS = 20000

@@ -65,6 +65,7 @@ function runScript(pool, job) {
   ];
 
   const steps = [];
+  const versions = {};
   let result = null;
   let pending = '';
   let dirty = false;
@@ -75,8 +76,8 @@ function runScript(pool, job) {
     pending = '';
     dirty = false;
     await pool.query(
-      'UPDATE platform_jobs SET log = right(log || $2, $3), steps = $4 WHERE id = $1',
-      [job.id, chunk, MAX_LOG, JSON.stringify(steps)],
+      'UPDATE platform_jobs SET log = right(log || $2, $3), steps = $4, versions = $5 WHERE id = $1',
+      [job.id, chunk, MAX_LOG, JSON.stringify(steps), JSON.stringify(versions)],
     );
   };
 
@@ -95,6 +96,16 @@ function runScript(pool, job) {
       }
     } else if ((match = line.match(/^::resultado::(.+)$/))) {
       try { result = JSON.parse(match[1]); } catch { /* se ignora una línea mal formada */ }
+    } else if ((match = line.match(/^::versiones::(.+)$/))) {
+      // RF-13: el script anuncia las versiones en varias marcas; se juntan.
+      try {
+        const parsed = JSON.parse(match[1]);
+        for (const [key, value] of Object.entries(parsed)) {
+          if (typeof value === 'string' && value.length <= 200) versions[key] = value;
+        }
+        dirty = true;
+      } catch { /* se ignora una línea mal formada */ }
+      return; // no se muestra en el registro: se ve en "Versiones"
     }
     pending += `${line}\n`;
   };
@@ -121,7 +132,7 @@ function runScript(pool, job) {
       // Un paso que quedó "en curso" cuando el script terminó con error, se marca como fallido.
       if (code !== 0) steps.filter((step) => step.status === 'running').forEach((step) => { step.status = 'error'; });
       await flush().catch(() => {});
-      resolve({ code: code ?? (signal ? 1 : 0), steps, result });
+      resolve({ code: code ?? (signal ? 1 : 0), steps, result, versions });
     });
   });
 }
@@ -139,10 +150,24 @@ async function invite(pool, job, result) {
   return { invitationStatus: invited.request.tenant?.invitationStatus, previewUrl: invited.previewUrl };
 }
 
+// Resumen legible de las versiones para la auditoría (RF-13).
+function versionSummary(v) {
+  const summary = {};
+  if (v.repo_commit) summary.commit = `${v.repo_rama ?? ''} ${v.repo_commit}`.trim();
+  if (v.app_commit || v.app_desplegada) summary.app = `commit ${v.app_desplegada ?? v.app_commit}${v.app_version ? ` · v${v.app_version}` : ''}`;
+  if (v.plantilla) summary.template = `${v.plantilla} · commit ${v.plantilla_commit ?? '?'}${v.plantilla_hash ? ` · sha256 ${v.plantilla_hash}` : ''}`;
+  if (v.motor_version) summary.engineVersion = `${v.motor} ${v.motor_version}${v.proveedor_aws ? ` · proveedor AWS ${v.proveedor_aws}` : ''}`;
+  if (v.ansible) summary.ansible = `ansible-core ${v.ansible}${v.ansible_commit ? ` · tareas ${v.ansible_commit}` : ''}`;
+  if (v.imagen) summary.image = v.imagen_nombre ? `${v.imagen_nombre} (${v.imagen})` : v.imagen;
+  const scanners = ['checkov', 'trivy', 'gitleaks', 'conftest', 'tflint', 'cfn_lint'].filter((key) => v[key]);
+  if (scanners.length) summary.scanners = scanners.map((key) => `${key.replace('_', '-')} ${v[key]}`).join(' · ');
+  return summary;
+}
+
 async function process_(pool, job) {
   console.log(`Trabajo ${job.id}: ${job.action} ${job.tenant.slug} (${job.tenant.engine}, ${job.tenant.region})`);
   const started = Date.now();
-  const { code, steps, result } = await runScript(pool, job);
+  const { code, steps, result, versions } = await runScript(pool, job);
   let finalResult = result;
   let error = null;
 
@@ -182,6 +207,7 @@ async function process_(pool, job) {
     description: code === 0 ? `${DONE[job.action]} (${job.tenant.engine}).` : `Falló: ${error}`,
     details: {
       jobId: job.id, engine: job.tenant.engine, region: job.tenant.region, plan: job.tenant.plan_id, duration,
+      ...versionSummary(versions),
       steps: steps.map((step) => `${step.number}. ${step.title}: ${step.status}${step.summary ? ` · ${step.summary}` : ''}`),
     },
   });

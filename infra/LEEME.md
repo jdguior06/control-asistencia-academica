@@ -362,6 +362,24 @@ regla 9090 desde el portal; no recrea nada) y `ansible-playbook -i inventarios/p
 plataforma.yml` (variables `PLATFORM_PROMETHEUS_URL` / `PLATFORM_GRAFANA_URL`, migración y
 worker nuevo).
 
+# Versiones en cada despliegue (RF-13)
+
+`aprovisionar.sh` anuncia con la marca `::versiones::` qué se usó en cada trabajo y el
+worker lo guarda con el trabajo (`platform_jobs.versions`):
+
+| Qué | De dónde sale |
+| --- | --- |
+| Código | rama y commit de la copia del repo del worker (`/opt/iac/repo`) |
+| Aplicación | último commit de `admin-docente-alumno`, su versión (`package.json`) y el commit que quedó en los servidores (`tenant.yml` lo escribe en `generado/tenants/<slug>/version-app.json`) |
+| Plantilla | carpeta del motor (`tenant/terraform`, `tenant/pulumi`, `tenant/cloudformation`), su último commit y un sha256 de sus archivos |
+| Motor | versión de Terraform, OpenTofu, Pulumi o AWS CLI, y del proveedor de AWS (`.terraform.lock.hcl` / `package-lock.json`) |
+| Ansible | versión de ansible-core y último commit de `infra/ansible` |
+| Imagen | AMI de Packer usada y su nombre (`asistencia-tenant-<fecha>`) |
+| Escáneres | versiones de Checkov, Trivy, Gitleaks, Conftest, TFLint o cfn-lint |
+
+Se ven en el portal (Instituciones → la institución → Infraestructura → "Versiones usadas
+en este trabajo") y en Auditoría (detalle del despliegue).
+
 # Errores, alertas y correos (RF-26 a RF-29)
 
 - **Errores del backend (RF-26):** el Nginx del frontend escribe una línea por cada
