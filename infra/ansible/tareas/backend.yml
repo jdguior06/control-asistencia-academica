@@ -28,6 +28,8 @@
       # El primer administrador lo invita el portal.
       PLATFORM_TENANT_SLUG={{ tenant_slug }}
       PLATFORM_BOOTSTRAP_KEY={{ platform_bootstrap_key }}
+      # "Estado del servicio" del administrador: lo consulta al portal por la red privada.
+      PLATFORM_STATUS_URL=http://{{ hostvars[groups['plataforma'][0]]['ip_privada'] }}/api/platform/tenant-status
       {% else %}
       # Se crea este administrador al arrancar con la base vacía.
       ADMIN_EMAIL={{ admin_email }}

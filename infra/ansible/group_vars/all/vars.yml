@@ -14,6 +14,10 @@ zona_horaria: America/La_Paz
 # ---------------------------------------------------------------- Portal (servidor plataforma)
 portal_dir: "{{ app_dir }}/Admin-institucional"
 portal_puerto: 4300
+# Tenants con infraestructura por región, según las cuotas de la cuenta (cada tenant: 6 vCPU
+# y 1 VPC). Ohio: 32 vCPU y 10 VPC, con la plataforma (4 vCPU, 2 VPC) y lugar para Packer.
+# Virginia y Oregón: 16 vCPU y 5 VPC.
+tenants_por_region: "us-east-2=4,us-east-1=2,us-west-2=2"
 portal_db_nombre: asistencia_platform
 portal_db_usuario: asistencia_platform
 portal_admin_nombre: Operador

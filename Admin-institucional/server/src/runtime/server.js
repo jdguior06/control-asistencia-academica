@@ -1,9 +1,10 @@
 const express = require('express');
+const { timingSafeEqual } = require('node:crypto');
 const { createPool, migrate, transaction } = require('./db');
 const { InvitationError, allowedTenantOrigin, deliverInvitation, issueTenantInvitation, tenantIsActivated } = require('./invitations');
-const { ProvisioningError, createInstitution, infrastructureState, latestJob, startJob } = require('./provisioning');
+const { ProvisioningError, createInstitution, infrastructureState, latestJob, regionCapacity, startJob } = require('./provisioning');
 const { audit, listAudit } = require('./audit');
-const { monitoringSnapshot } = require('./monitoring');
+const { monitoringSnapshot, tenantStatus } = require('./monitoring');
 const { authorized, notify, receiveGrafana } = require('./alerts');
 const {
   bootstrapAdmin, configuredAdmin, closeSession, limitLogins, newToken,
@@ -35,6 +36,12 @@ const requestSelect = `
     WHERE tenant_id = t.id AND status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 1
   ) active ON true
 `;
+
+function sameHash(a, b) {
+  const left = Buffer.from(String(a));
+  const right = Buffer.from(String(b));
+  return left.length === right.length && timingSafeEqual(left, right);
+}
 
 // Estado de la infraestructura para la lista y los filtros (RF-14). "deleted" distingue
 // una institución cuya infraestructura se eliminó de una que nunca la tuvo.
@@ -251,7 +258,9 @@ async function inviteTenant(pool, id, body) {
       const { rows: [row] } = await client.query(`${requestSelect} WHERE r.id = $1`, [id]);
       if (tenant.invitation_status === 'activated') return { request: serializeRequest(row) };
 
-      await client.query('UPDATE platform_tenants SET app_url = $1 WHERE id = $2', [appUrl, tenant.id]);
+      // El hash de la clave permite a la app del tenant consultar el estado de sus servicios.
+      await client.query('UPDATE platform_tenants SET app_url = $1, status_key_hash = $2 WHERE id = $3',
+        [appUrl, tokenHash(bootstrapKey).toString('hex'), tenant.id]);
       const email = row.admin_email;
       const name = row.admin_name;
       const issued = await issueTenantInvitation(appUrl, { bootstrapKey, slug: row.slug, email, name });
@@ -309,6 +318,21 @@ function createApp(pool, platformOnly) {
     const changes = await receiveGrafana(pool, request.body);
     response.json({ received: changes.length });
     notify(pool, changes).catch((error) => console.error('Error al avisar las alertas.', error.message));
+  });
+
+  // Estado de los servicios de UN tenant, para su administrador: lo pide el backend de su
+  // app con la clave de vinculación. El gateway solo lo acepta desde las redes privadas.
+  app.get('/api/platform/tenant-status/:slug', async (request, response) => {
+    const slug = String(request.params.slug ?? '');
+    const header = request.get('Authorization') ?? '';
+    const key = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+    const { rows: [tenant] } = await pool.query('SELECT status_key_hash FROM platform_tenants WHERE slug = $1', [slug]);
+    if (!key || !tenant?.status_key_hash || !sameHash(tokenHash(key).toString('hex'), tenant.status_key_hash)) {
+      throw new HttpError(401, 'Clave de la institución inválida.');
+    }
+    const status = await tenantStatus(pool, slug);
+    if (!status) throw new HttpError(404, 'Institución no encontrada.');
+    response.json(status);
   });
 
   app.use(express.json({ limit: '16kb' }));
@@ -461,6 +485,10 @@ function createApp(pool, platformOnly) {
   platform.post('/requests/:id/resume', async (request, response) => {
     requireRequestId(request.params.id);
     response.status(201).json({ job: await startJob(pool, request.params.id, 'resume', '', response.locals.user) });
+  });
+
+  platform.get('/regions', async (_request, response) => {
+    response.json({ regions: await regionCapacity(pool) });
   });
 
   platform.get('/monitoring', async (_request, response) => {

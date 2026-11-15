@@ -17,6 +17,7 @@ import { ProfilePage } from '../features/profile/presentation/ProfilePage'
 import { StudentModulePage } from '../features/student-portal/presentation/StudentModulePage'
 import { StudentProfilePage } from '../features/student-portal/presentation/StudentProfilePage'
 import { StudentsPage } from '../features/students/presentation/StudentsPage'
+import { ServiceStatusPage } from '../features/service-status/presentation/ServiceStatusPage'
 import { TeachersPage } from '../features/teachers/presentation/TeachersPage'
 import { AdminLayout } from './layouts/AdminLayout'
 import { AttendanceLayout } from './layouts/AttendanceLayout'
@@ -75,6 +76,7 @@ const attendanceRoutes: RouteObject[] = [
         children: [
           { index: true, element: <Navigate to="/admin/docentes" replace /> },
           { path: 'docentes', element: <TeachersPage /> },
+          { path: 'estado', element: <ServiceStatusPage /> },
           { path: '*', element: <Navigate to="/admin/docentes" replace /> },
         ],
       },

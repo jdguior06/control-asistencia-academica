@@ -89,4 +89,21 @@ async function monitoringSnapshot(pool) {
   return snapshot;
 }
 
-module.exports = { monitoringSnapshot };
+// Estado de un solo tenant para su administrador (lo pide la app del tenant): sin datos
+// de otras instituciones ni de la plataforma.
+async function tenantStatus(pool, slug) {
+  const snapshot = await monitoringSnapshot(pool);
+  const tenant = snapshot.tenants.find((item) => item.slug === slug);
+  if (!tenant) return null;
+  const own = (alert) => alert.tenant === slug;
+  const clean = ({ email: _email, institutionName: _name, ...alert }) => alert;
+  return {
+    updatedAt: snapshot.updatedAt,
+    prometheus: snapshot.prometheus,
+    tenant,
+    alerts: snapshot.alerts.filter(own).map(clean),
+    events: snapshot.events.filter(own).slice(0, 15).map(clean),
+  };
+}
+
+module.exports = { monitoringSnapshot, tenantStatus };

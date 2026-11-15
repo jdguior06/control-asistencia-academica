@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ArrowRight, Building2, ChevronRight, CircleAlert, Rocket, X } from 'lucide-react'
-import { ApiError, api, errorMessage, formatNumber, type Plan, type ProvisioningJob, type TenantRequest } from './api'
+import { ApiError, api, errorMessage, formatNumber, type Plan, type ProvisioningJob, type RegionCapacity, type TenantRequest } from './api'
 import { engines, environments, optionLabel, providers, regions, slugFromName, type Provider } from './tenant-options'
 import './create-plan.css'
 
@@ -39,7 +39,10 @@ export default function CreateTenantDialog({ plans, usedSlugs, onClose, onCreate
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [review, setReview] = useState<TenantPreview>()
+  const [capacity, setCapacity] = useState<Record<string, RegionCapacity>>({})
   const plan = plans.find(item => item.id === planId)
+  const regionFull = (value: string) => capacity[value]?.free === 0
+  const selectedCapacity = capacity[region]
   const regionChoices = regions.filter(option => option.provider === provider)
   const engineChoices = engines.filter(option => provider === 'aws' || option.value !== 'cloudformation')
 
@@ -49,6 +52,22 @@ export default function CreateTenantDialog({ plans, usedSlugs, onClose, onCreate
     dialog.showModal()
     nameRef.current?.focus({ preventScroll: true })
     return () => { if (dialog.open) dialog.close() }
+  }, [])
+
+  // Lugares libres por región: una región llena no se puede elegir.
+  useEffect(() => {
+    let alive = true
+    api<{ regions: RegionCapacity[] }>('/api/platform/regions')
+      .then(result => {
+        if (!alive) return
+        const byRegion = Object.fromEntries(result.regions.map(item => [item.region, item]))
+        setCapacity(byRegion)
+        setRegion(current => byRegion[current]?.free === 0
+          ? regions.find(option => !option.disabled && option.provider === 'aws' && byRegion[option.value]?.free !== 0)?.value ?? current
+          : current)
+      })
+      .catch(() => { /* sin datos de capacidad: el servidor igual valida el límite */ })
+    return () => { alive = false }
   }, [])
 
   useEffect(() => {
@@ -187,8 +206,13 @@ export default function CreateTenantDialog({ plans, usedSlugs, onClose, onCreate
               </label>
               <label className="pcd-field"><span>Región</span>
                 <select value={region} onChange={event => setRegion(event.target.value)}>
-                  {regionChoices.map(option => <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>)}
+                  {regionChoices.map(option => <option key={option.value} value={option.value} disabled={option.disabled || regionFull(option.value)}>
+                    {option.label}{capacity[option.value] ? ` · ${capacity[option.value].free} de ${capacity[option.value].max} libres` : ''}
+                  </option>)}
                 </select>
+                {selectedCapacity && <small className="pct-capacity">{selectedCapacity.free === 0
+                  ? 'Región llena: elimina una institución o elige otra región.'
+                  : `${selectedCapacity.used} de ${selectedCapacity.max} instituciones con infraestructura en esta región.`}</small>}
               </label>
               <label className="pcd-field"><span>Entorno</span>
                 <select name="environment">

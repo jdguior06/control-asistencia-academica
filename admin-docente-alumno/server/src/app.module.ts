@@ -13,6 +13,7 @@ import { ClassSessionsModule } from './modules/class-sessions/class-sessions.mod
 import { StudentsModule } from './modules/students/students.module';
 import { SharedModule } from './shared/shared.module';
 import { HealthController } from './health.controller';
+import { ServiceStatusController } from './service-status.controller';
 
 @Module({
   imports: [
@@ -30,6 +31,6 @@ import { HealthController } from './health.controller';
     JustificationsModule,
     NotificationsModule,
   ],
-  controllers: [HealthController],
+  controllers: [HealthController, ServiceStatusController],
 })
 export class AppModule {}

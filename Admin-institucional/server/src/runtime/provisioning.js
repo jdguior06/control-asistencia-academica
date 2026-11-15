@@ -14,9 +14,41 @@ class ProvisioningError extends Error {
 // Dónde se puede crear hoy: las 3 regiones que permite la organización de la cuenta de AWS.
 // Azure se ve en el formulario, pero todavía no se aprovisiona.
 const PROVISIONABLE_REGIONS = ['us-east-2', 'us-east-1', 'us-west-2'];
-// Instituciones con infraestructura por región. Cada una usa 6 vCPU y la cuota es de
-// 16 por región (en Ohio, además, la plataforma usa 4): 2 por región entran.
-const TENANTS_PER_REGION = Number(process.env.PLATFORM_TENANTS_PER_REGION) || 2;
+// Instituciones con infraestructura por región, según las cuotas de la cuenta (vCPU y VPC).
+// Cada tenant usa 6 vCPU y 1 VPC. PLATFORM_TENANTS_PER_REGION: un número para todas las
+// regiones o "us-east-2=4,us-east-1=2,us-west-2=2". Por defecto, 2 en cada una.
+function regionLimits() {
+  const raw = (process.env.PLATFORM_TENANTS_PER_REGION ?? '').trim();
+  const limits = Object.fromEntries(PROVISIONABLE_REGIONS.map((region) => [region, 2]));
+  if (/^\d+$/.test(raw)) return Object.fromEntries(PROVISIONABLE_REGIONS.map((region) => [region, Number(raw)]));
+  for (const part of raw.split(',')) {
+    const [region, value] = part.split('=').map((item) => item?.trim());
+    if (region in limits && /^\d+$/.test(value ?? '')) limits[region] = Number(value);
+  }
+  return limits;
+}
+
+// Instituciones de cada región que tienen infraestructura (creada, suspendida, fallida o en
+// curso): todo lo que no terminó en "eliminada".
+const usedByRegion = `
+  SELECT t.region, count(*)::int AS n
+  FROM platform_tenants t
+  JOIN LATERAL (
+    SELECT action, status FROM platform_jobs WHERE tenant_id = t.id ORDER BY created_at DESC LIMIT 1
+  ) j ON true
+  WHERE NOT (j.action = 'delete' AND j.status = 'succeeded') AND t.id <> $1
+  GROUP BY t.region
+`;
+
+// Lugares por región para el formulario de creación.
+async function regionCapacity(pool) {
+  const limits = regionLimits();
+  const { rows } = await pool.query(usedByRegion, ['00000000-0000-0000-0000-000000000000']);
+  const used = Object.fromEntries(rows.map((row) => [row.region, row.n]));
+  return PROVISIONABLE_REGIONS.map((region) => ({
+    region, max: limits[region], used: used[region] ?? 0, free: Math.max(0, limits[region] - (used[region] ?? 0)),
+  }));
+}
 const PROVISIONABLE_PLANS = ['basico', 'estandar', 'avanzado'];
 
 const jobSelect = `
@@ -112,18 +144,11 @@ async function enqueue(client, tenant, action, user) {
     }
     // Un bloqueo evita que dos creaciones simultáneas pasen el límite o reciban la misma red.
     await client.query('SELECT pg_advisory_xact_lock(4300002)');
-    // Cuántas instituciones de la región tienen infraestructura (creada, suspendida, fallida
-    // o en curso): cuenta todo lo que no terminó en "eliminada".
-    const { rows: [used] } = await client.query(`
-      SELECT count(*)::int AS n
-      FROM platform_tenants t
-      JOIN LATERAL (
-        SELECT action, status FROM platform_jobs WHERE tenant_id = t.id ORDER BY created_at DESC LIMIT 1
-      ) j ON true
-      WHERE t.region = $1 AND t.id <> $2 AND NOT (j.action = 'delete' AND j.status = 'succeeded')
-    `, [tenant.region, tenant.id]);
-    if (used.n >= TENANTS_PER_REGION) {
-      throw new ProvisioningError(409, `La región ${tenant.region} ya tiene ${used.n} instituciones con infraestructura (máximo ${TENANTS_PER_REGION}, por la cuota de vCPU). Elimina una o elige otra región.`);
+    const { rows } = await client.query(usedByRegion, [tenant.id]);
+    const used = rows.find((row) => row.region === tenant.region)?.n ?? 0;
+    const max = regionLimits()[tenant.region];
+    if (used >= max) {
+      throw new ProvisioningError(409, `La región ${tenant.region} ya tiene ${used} instituciones con infraestructura (máximo ${max}, por las cuotas de vCPU y VPC). Elimina una o elige otra región.`);
     }
     // Red 10.N.0.0/16 libre.
     if (!tenant.network_number) {
@@ -273,5 +298,5 @@ async function tenantStates(pool) {
 
 module.exports = {
   PROVISIONABLE_PLANS, PROVISIONABLE_REGIONS, ProvisioningError,
-  createInstitution, infrastructureState, latestJob, serializeJob, startJob, tenantStates,
+  createInstitution, infrastructureState, latestJob, regionCapacity, serializeJob, startJob, tenantStates,
 };

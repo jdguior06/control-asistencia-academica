@@ -8,7 +8,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "editable": false,
   "refresh": "30s",
   "time": {
@@ -347,13 +347,44 @@
       }
     },
     {
+      "id": 35,
+      "type": "alertlist",
+      "title": "Alertas activas de $tenant",
+      "description": "Reglas de Grafana disparadas o pendientes para este tenant. También llegan al portal (Monitoreo) y por correo.",
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 24,
+        "h": 6
+      },
+      "options": {
+        "viewMode": "list",
+        "groupMode": "default",
+        "groupBy": [],
+        "maxItems": 10,
+        "sortOrder": 1,
+        "dashboardAlerts": false,
+        "alertName": "",
+        "alertInstanceLabelFilter": "{tenant=\"$tenant\"}",
+        "folder": null,
+        "showInactiveAlerts": false,
+        "stateFilter": {
+          "firing": true,
+          "pending": true,
+          "noData": true,
+          "normal": false,
+          "error": true
+        }
+      }
+    },
+    {
       "id": 5,
       "type": "row",
       "title": "Backend (API NestJS)",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 7,
+        "y": 13,
         "w": 24,
         "h": 1
       },
@@ -370,7 +401,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 8,
+        "y": 14,
         "w": 8,
         "h": 7
       },
@@ -435,7 +466,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 8,
+        "y": 14,
         "w": 8,
         "h": 7
       },
@@ -489,7 +520,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 8,
+        "y": 14,
         "w": 8,
         "h": 7
       },
@@ -543,7 +574,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 15,
+        "y": 21,
         "w": 12,
         "h": 7
       },
@@ -595,7 +626,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 15,
+        "y": 21,
         "w": 6,
         "h": 7
       },
@@ -661,7 +692,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 15,
+        "y": 21,
         "w": 6,
         "h": 7
       },
@@ -724,7 +755,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 22,
+        "y": 28,
         "w": 24,
         "h": 1
       },
@@ -741,7 +772,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 23,
+        "y": 29,
         "w": 6,
         "h": 5
       },
@@ -809,7 +840,7 @@
       },
       "gridPos": {
         "x": 6,
-        "y": 23,
+        "y": 29,
         "w": 6,
         "h": 5
       },
@@ -869,7 +900,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 23,
+        "y": 29,
         "w": 6,
         "h": 5
       },
@@ -929,7 +960,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 23,
+        "y": 29,
         "w": 6,
         "h": 5
       },
@@ -989,7 +1020,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 28,
+        "y": 34,
         "w": 12,
         "h": 7
       },
@@ -1054,7 +1085,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 28,
+        "y": 34,
         "w": 12,
         "h": 7
       },
@@ -1104,7 +1135,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 35,
+        "y": 41,
         "w": 24,
         "h": 1
       },
@@ -1121,7 +1152,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 36,
+        "y": 42,
         "w": 8,
         "h": 7
       },
@@ -1175,7 +1206,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 36,
+        "y": 42,
         "w": 8,
         "h": 7
       },
@@ -1229,7 +1260,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 36,
+        "y": 42,
         "w": 8,
         "h": 7
       },
@@ -1279,7 +1310,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 43,
+        "y": 49,
         "w": 24,
         "h": 1
       },
@@ -1296,7 +1327,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 44,
+        "y": 50,
         "w": 8,
         "h": 8
       },
@@ -1352,7 +1383,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 44,
+        "y": 50,
         "w": 8,
         "h": 8
       },
@@ -1408,7 +1439,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 44,
+        "y": 50,
         "w": 8,
         "h": 8
       },
@@ -1475,7 +1506,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 52,
+        "y": 58,
         "w": 12,
         "h": 7
       },
@@ -1529,7 +1560,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 52,
+        "y": 58,
         "w": 12,
         "h": 7
       },
@@ -1579,7 +1610,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 59,
+        "y": 65,
         "w": 24,
         "h": 1
       },
@@ -1596,7 +1627,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 60,
+        "y": 66,
         "w": 12,
         "h": 8
       },
@@ -1650,7 +1681,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 60,
+        "y": 66,
         "w": 12,
         "h": 8
       },
@@ -1700,7 +1731,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 68,
+        "y": 74,
         "w": 24,
         "h": 1
       },
@@ -1717,7 +1748,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 69,
+        "y": 75,
         "w": 12,
         "h": 7
       },
@@ -1773,7 +1804,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 69,
+        "y": 75,
         "w": 12,
         "h": 7
       },

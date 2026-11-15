@@ -58,6 +58,15 @@
           proxy_read_timeout 300s;
         }
 
+        # Estado de los servicios de un tenant: lo pide el backend de cada tenant (10.N.x.x).
+        location /api/platform/tenant-status/ {
+          allow 10.0.0.0/8;
+          deny all;
+          proxy_pass http://127.0.0.1:{{ portal_puerto }};
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+        }
+
         # Avisos de Grafana (vm-monitoreo): solo desde la red privada de la plataforma.
         location /api/platform/alerts/ {
           allow 10.0.0.0/16;

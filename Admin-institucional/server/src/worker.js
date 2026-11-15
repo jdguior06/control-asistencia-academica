@@ -7,6 +7,7 @@
 // del sistema: el portal solo escribe en la base; el worker es quien tiene las
 // herramientas de IaC y el rol de IAM.
 const { spawn } = require('node:child_process');
+const { createHash } = require('node:crypto');
 const { readFile } = require('node:fs/promises');
 const path = require('node:path');
 const readline = require('node:readline');
@@ -221,6 +222,21 @@ async function process_(pool, job) {
   console.log(`Trabajo ${job.id}: ${code === 0 ? 'terminado' : 'falló'}`);
 }
 
+// Tenants creados antes de guardar el hash de su clave: se toma de generado/ (solo el
+// worker puede leerlo) para que su app pueda consultar el estado de sus servicios.
+async function backfillStatusKeys(pool) {
+  const { rows } = await pool.query('SELECT id, slug FROM platform_tenants WHERE status_key_hash IS NULL');
+  for (const row of rows) {
+    try {
+      const key = (await readFile(path.join(INFRA, 'generado', 'tenants', row.slug, 'clave_vinculacion'), 'utf8')).trim();
+      if (!key) continue;
+      await pool.query('UPDATE platform_tenants SET status_key_hash = $1 WHERE id = $2',
+        [createHash('sha256').update(key).digest('hex'), row.id]);
+      console.log(`Clave de estado registrada para ${row.slug}.`);
+    } catch { /* sin clave en generado/: el tenant no está creado */ }
+  }
+}
+
 async function main() {
   const pool = createPool(databaseUrl());
   pool.on('error', (error) => console.error('Conexión PostgreSQL cerrada.', error.code ?? error.name));
@@ -231,6 +247,7 @@ async function main() {
       error = 'El worker se reinició durante el trabajo. Vuelve a intentarlo.'
     WHERE status = 'running'
   `);
+  await backfillStatusKeys(pool).catch((error) => console.error('No se pudieron completar las claves de estado.', error.message));
   console.log(`Worker de aprovisionamiento listo (${SCRIPT}).`);
 
   while (!stopping) {

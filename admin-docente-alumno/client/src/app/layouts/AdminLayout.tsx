@@ -1,10 +1,16 @@
-import { CalendarCheck2, LogOut, Presentation } from 'lucide-react'
+import { Activity, CalendarCheck2, LogOut, Presentation } from 'lucide-react'
 import { Link, NavLink, Outlet } from 'react-router'
 import { useAuth } from '../../features/auth/application/auth-context'
 import { Avatar } from '../../features/profile/presentation/Avatar'
 import { AppBackground } from '../../shared/ui/AppBackground'
 import { Button } from '../../shared/ui/Button'
 import { ThemeToggle } from '../../shared/ui/ThemeToggle'
+import { cn } from '../../shared/lib/cn'
+
+const NAV = [
+  { to: '/admin/docentes', label: 'Docentes', icon: Presentation },
+  { to: '/admin/estado', label: 'Estado del servicio', icon: Activity },
+]
 
 export function AdminLayout() {
   const { user, logout } = useAuth()
@@ -22,10 +28,15 @@ export function AdminLayout() {
             <span className="block text-xs text-muted">Administración institucional</span>
           </span>
         </Link>
-        <nav aria-label="Administración institucional" className="lg:mt-5">
-          <NavLink to="/admin/docentes" end className="flex items-center gap-3 rounded-xl bg-brand-soft px-4 py-3 font-semibold text-brand-ink">
-            <Presentation className="size-5 shrink-0" aria-hidden="true" /> Docentes
-          </NavLink>
+        <nav aria-label="Administración institucional" className="flex gap-1 overflow-x-auto lg:mt-5 lg:flex-col">
+          {NAV.map(({ to, label, icon: Icon }) => (
+            <NavLink key={to} to={to} end className={({ isActive }) => cn(
+              'flex shrink-0 items-center gap-3 rounded-xl px-4 py-3 font-semibold transition',
+              isActive ? 'bg-brand-soft text-brand-ink' : 'text-ink/75 hover:bg-canvas hover:text-ink',
+            )}>
+              <Icon className="size-5 shrink-0" aria-hidden="true" /> {label}
+            </NavLink>
+          ))}
         </nav>
         <div className="mt-auto flex min-w-0 items-center gap-2 rounded-xl border border-line bg-surface p-2.5">
           <Avatar name={user?.name ?? ''} photoUrl={null} className="size-9 shrink-0 text-xs" />

@@ -166,6 +166,14 @@ export interface AuditEvent {
   details: Record<string, unknown>
 }
 
+// Lugares libres por región (cuotas de vCPU y VPC de la cuenta).
+export interface RegionCapacity {
+  region: string
+  max: number
+  used: number
+  free: number
+}
+
 export interface PlatformUser {
   name: string
   email: string

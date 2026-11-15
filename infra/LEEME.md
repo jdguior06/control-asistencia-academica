@@ -4,6 +4,10 @@ Plataforma multitenant: un **portal** crea universidades (tenants). Cada tenant 
 su propia red y 3 servidores (frontend, backend, base), con su URL en nip.io y su
 monitoreo en Grafana.
 
+> Entregables escritos (arquitectura, flujo de creación, planes, herramientas,
+> operaciones, estado, seguridad, aislamiento y guion de la demo):
+> [DOCUMENTACION.md](DOCUMENTACION.md). Este LEEME es la guía para levantarlo a mano.
+
 ```
                                   internet
                                      │ http://<slug>.<ip>.nip.io
@@ -430,7 +434,8 @@ ansible <slug>-backend -i inventarios/<slug>.ini -b -m systemd -a "name=asistenc
 ansible <slug>-backend -i inventarios/<slug>.ini -b -m systemd -a "name=asistencia-api state=started"
 ```
 
-## Pendiente (siguientes etapas)
+## Pendiente (requisitos opcionales)
 
-- **Respaldos** de la base de cada tenant y recuperación automática (alta disponibilidad barata).
-- **Trazas** de la app (OpenTelemetry → Tempo → Grafana).
+- **RF-19** respaldar y restaurar desde el portal (hoy, procedimiento manual en DOCUMENTACION.md 6.6).
+- **RF-06** cambiar el plan de un tenant · **RF-05** límite de estudiantes en la app.
+- **RF-15** actualizar desde el portal (hoy, manual: DOCUMENTACION.md 6.2).

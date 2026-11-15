@@ -25,6 +25,8 @@
       # Pantalla "Monitoreo" del portal: consulta a Prometheus por la red privada.
       PLATFORM_PROMETHEUS_URL=http://{{ hostvars[groups['monitoreo'][0]]['ip_privada'] }}:{{ prometheus_puerto }}
       PLATFORM_GRAFANA_URL=http://{{ hostvars[groups['monitoreo'][0]]['ansible_host'] }}:{{ grafana_puerto }}
+      # Instituciones con infraestructura por región (cuotas de vCPU y VPC de la cuenta).
+      PLATFORM_TENANTS_PER_REGION={{ tenants_por_region }}
       # Alertas de Grafana (RF-29): llegan a POST /api/platform/alerts/grafana con este token.
       PLATFORM_ALERT_TOKEN={{ alertas_token }}
       # Correos de las alertas: a estos destinatarios y al administrador del tenant afectado.
