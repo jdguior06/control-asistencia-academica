@@ -39,6 +39,7 @@ type Health = { tone: Tone; text: string }
 const activeLabels = {
   create: 'Creando…', delete: 'Eliminando…', suspend: 'Suspendiendo…', resume: 'Reanudando…', backup: 'Respaldando…', restore: 'Restaurando…',
   change_plan: 'Cambiando el plan…',
+  update: 'Actualizando…',
 } as const
 
 function health(tenant: MonitoredTenant, prometheusOk: boolean): Health {

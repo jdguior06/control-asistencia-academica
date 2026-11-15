@@ -33,7 +33,8 @@
     repo: "{{ app_repo }}"
     dest: /opt/iac/repo
     version: "{{ app_rama }}"
-    depth: 1
+    # Historial completo: "Actualizar" (RF-15) compara commits (git diff) para saber qué
+    # partes cambiaron desde el último despliegue de cada tenant.
     force: true # descarta cambios locales (Pulumi.<slug>.yaml, .terraform/ quedan: no están en git)
   become: true
   become_user: iac

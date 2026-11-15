@@ -6,12 +6,13 @@
 // Corre como un servicio aparte del portal (asistencia-worker), con otro usuario
 // del sistema: el portal solo escribe en la base; el worker es quien tiene las
 // herramientas de IaC y el rol de IAM.
-const { spawn } = require('node:child_process');
+const { execFile, spawn } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const { readFile } = require('node:fs/promises');
 const path = require('node:path');
 const readline = require('node:readline');
 const { setTimeout: sleep } = require('node:timers/promises');
+const { promisify } = require('node:util');
 const { databaseUrl } = require('./config');
 const { createPool } = require('./runtime/db');
 const { inviteTenant } = require('./runtime/server');
@@ -22,6 +23,7 @@ const { BACKUP_POLICY } = require('./runtime/provisioning');
 const SCRIPT_ACTIONS = {
   create: 'crear', delete: 'borrar', suspend: 'suspender', resume: 'reanudar', backup: 'respaldar', restore: 'restaurar',
   change_plan: 'crear', // vuelve a aplicar el motor con el plan nuevo (solo cambia lo necesario)
+  update: 'actualizar', // RF-15: plantillas y app al último commit (el mismo flujo de crear)
 };
 const DONE = {
   create: 'La infraestructura quedó lista',
@@ -31,6 +33,7 @@ const DONE = {
   backup: 'Se guardó un respaldo de la base de datos',
   restore: 'La base de datos se restauró desde un respaldo',
   change_plan: 'El plan cambió',
+  update: 'La institución quedó actualizada',
 };
 
 const INFRA = path.resolve(process.env.PLATFORM_INFRA_DIR ?? path.join(__dirname, '..', '..', '..', 'infra'));
@@ -62,14 +65,25 @@ async function claim(pool) {
   `, [job.tenant_id]);
   // Respaldos: la retención no cuenta los respaldos de antes de la infraestructura actual.
   let since;
-  if (job.action === 'backup') {
+  if (job.action === 'backup' || job.action === 'update') {
     const { rows: [created] } = await pool.query(`
       SELECT to_char(finished_at AT TIME ZONE 'UTC', 'YYYYMMDD-HH24MISS') AS since FROM platform_jobs
       WHERE tenant_id = $1 AND action = 'create' AND status = 'succeeded' ORDER BY created_at DESC LIMIT 1
     `, [job.tenant_id]);
     since = created?.since;
   }
-  return { ...job, tenant, since };
+  // Actualizar: con qué commit estaba desplegada (para la auditoría: antes → después).
+  let previous;
+  if (job.action === 'update') {
+    const { rows: [deployed] } = await pool.query(`
+      SELECT versions FROM platform_jobs
+      WHERE tenant_id = $1 AND status = 'succeeded' AND action IN ('create', 'change_plan', 'update')
+      ORDER BY created_at DESC LIMIT 1
+    `, [job.tenant_id]);
+    const v = deployed?.versions ?? {};
+    if (v.repo_commit) previous = `${v.repo_rama ?? ''} ${v.repo_commit}`.trim() + (v.app_commit ? ` · app ${v.app_commit}` : '');
+  }
+  return { ...job, tenant, since, previous };
 }
 
 function runScript(pool, job) {
@@ -83,8 +97,11 @@ function runScript(pool, job) {
   ];
   if (job.action === 'restore') args.push('--respaldo', String(job.params?.backupKey ?? ''));
   // El disco que ya tienen los servidores (no se achica; con CloudFormation no cambia).
-  if (job.action === 'change_plan' && job.params?.disk) args.push('--disco', String(job.params.disk));
-  if (job.action === 'backup' && job.since) args.push('--conservar-desde', job.since);
+  if (['change_plan', 'update'].includes(job.action) && job.params?.disk) args.push('--disco', String(job.params.disk));
+  if (['backup', 'update'].includes(job.action) && job.since) args.push('--conservar-desde', job.since);
+  if (job.action === 'update') {
+    args.push('--respaldar-antes', job.params?.backupFirst ? 'si' : 'no', '--parches', job.params?.securityPatches ? 'si' : 'no');
+  }
 
   const steps = [];
   const versions = {};
@@ -186,9 +203,139 @@ function versionSummary(v) {
   return summary;
 }
 
+// ------------------------------------------------------------------ repositorio (RF-15)
+const exec = promisify(execFile);
+const REPO = path.resolve(INFRA, '..');
+async function git(...args) {
+  const { stdout } = await exec('git', ['-C', REPO, ...args], { timeout: 120_000, maxBuffer: 4 * 1024 * 1024 });
+  return stdout.trim();
+}
+const branch = () => git('rev-parse', '--abbrev-ref', 'HEAD');
+
+// La copia del worker se clonó con historial corto: se completa una vez para saber en qué
+// commit cambió cada parte (app, plantillas, Ansible).
+async function fetchRepo() {
+  const name = await branch();
+  const shallow = (await git('rev-parse', '--is-shallow-repository')) === 'true';
+  await git('fetch', '--quiet', ...(shallow ? ['--unshallow'] : []), 'origin', name);
+  return name;
+}
+
+// Igual que la tarea de Ansible (force): los archivos que no están en git (generado/,
+// .terraform/, Pulumi.<slug>.yaml) se conservan.
+async function pullRepo() {
+  const before = await git('rev-parse', '--short=12', 'HEAD');
+  const name = await fetchRepo();
+  await git('reset', '--hard', '--quiet', `origin/${name}`);
+  const after = await git('rev-parse', '--short=12', 'HEAD');
+  const subject = await git('log', '-1', '--format=%s');
+  return [before === after
+    ? `Repositorio del worker: ya estaba en el último commit de ${name} (${after}).`
+    : `Repositorio del worker: ${name} ${before} → ${after} (${subject}).`];
+}
+
+async function failBeforeScript(pool, job, error) {
+  await appendLog(pool, job.id, [error]);
+  await pool.query(`
+    UPDATE platform_jobs SET status = 'failed', error = $2, finished_at = now() WHERE id = $1
+  `, [job.id, error]);
+  await audit(pool, {
+    action: JOB_ACTIONS[job.action], result: 'failed', actor: 'Worker', actorRole: 'Aprovisionamiento',
+    resource: job.tenant.institution_name, reference: job.tenant.slug, description: `Falló: ${error}`,
+    details: { jobId: job.id, engine: job.tenant.engine, region: job.tenant.region },
+  });
+}
+
+const PARTS = {
+  app: ['admin-docente-alumno'],
+  ansible: ['infra/ansible'],
+  scripts: ['infra/scripts', 'infra/politicas'],
+};
+const TEMPLATES = { terraform: 'infra/tenant/terraform', opentofu: 'infra/tenant/terraform', pulumi: 'infra/tenant/pulumi', cloudformation: 'infra/tenant/cloudformation' };
+
+async function lastCommit(ref, paths) {
+  const [commit, date, subject] = (await git('log', '-1', '--format=%h%x09%cI%x09%s', ref, '--', ...paths)).split('\t');
+  return commit ? { commit, date, subject } : null;
+}
+
+// Última versión de la rama y, para cada tenant, qué partes cambiaron desde el commit con
+// el que se desplegó por última vez (git diff entre los dos commits).
+async function checkRepo(pool) {
+  const name = await fetchRepo();
+  const ref = `origin/${name}`;
+  const [commit, date, subject] = (await git('log', '-1', '--format=%h%x09%cI%x09%s', ref)).split('\t');
+  const data = {
+    branch: name,
+    repo: { commit: await git('rev-parse', '--short=12', ref), date, subject, short: commit },
+    app: await lastCommit(ref, PARTS.app),
+    ansible: await lastCommit(ref, PARTS.ansible),
+    scripts: await lastCommit(ref, PARTS.scripts),
+    templates: {},
+    tenants: {},
+  };
+  for (const [engine, dir] of Object.entries(TEMPLATES)) data.templates[engine] = await lastCommit(ref, [dir]);
+
+  const { rows } = await pool.query(`
+    SELECT t.slug, t.engine, j.versions->>'repo_commit' AS base
+    FROM platform_tenants t
+    JOIN LATERAL (
+      SELECT versions FROM platform_jobs
+      WHERE tenant_id = t.id AND status = 'succeeded' AND action IN ('create', 'change_plan', 'update')
+      ORDER BY created_at DESC LIMIT 1
+    ) j ON true
+  `);
+  for (const row of rows) {
+    if (!row.base || !/^[0-9a-f]{7,40}$/.test(row.base)) continue;
+    try {
+      const files = (await git('diff', '--name-only', row.base, ref)).split('\n').filter(Boolean);
+      const touches = (paths) => files.some((file) => paths.some((dir) => file === dir || file.startsWith(`${dir}/`)));
+      data.tenants[row.slug] = {
+        base: row.base,
+        app: touches(PARTS.app), ansible: touches(PARTS.ansible), scripts: touches(PARTS.scripts),
+        templates: touches([TEMPLATES[row.engine]]),
+        files: files.length,
+      };
+    } catch {
+      data.tenants[row.slug] = { base: row.base, unknown: true }; // commit que ya no está en la rama
+    }
+  }
+  await pool.query(`
+    INSERT INTO platform_repo (id, data, checked_at) VALUES (true, $1, now())
+    ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, checked_at = now()
+  `, [JSON.stringify(data)]);
+}
+
+const REPO_CHECK_MS = 10 * 60 * 1000;
+let lastRepoCheck = 0;
+async function maybeCheckRepo(pool) {
+  const { rows: [row] } = await pool.query(`
+    SELECT requested_at > coalesce(checked_at, '-infinity') AS requested FROM platform_repo WHERE id
+  `);
+  if (!row?.requested && Date.now() - lastRepoCheck < REPO_CHECK_MS) return;
+  lastRepoCheck = Date.now();
+  try {
+    await checkRepo(pool);
+  } catch (error) {
+    console.error('No se pudo comprobar el repositorio.', error.message);
+    // Se marca como comprobado para no reintentar en cada vuelta; el portal lo indica.
+    await pool.query(`UPDATE platform_repo SET checked_at = now(), data = data || $1 WHERE id`,
+      [JSON.stringify({ error: 'No se pudo consultar el repositorio remoto.' })]);
+  }
+}
+
 async function process_(pool, job) {
   console.log(`Trabajo ${job.id}: ${job.action} ${job.tenant.slug} (${job.tenant.engine}, ${job.tenant.region})`);
   const started = Date.now();
+  if (job.action === 'update') {
+    // RF-15: primero la copia del repositorio del worker pasa al último commit de su rama.
+    try {
+      const lines = await pullRepo();
+      await appendLog(pool, job.id, lines);
+    } catch (cause) {
+      await failBeforeScript(pool, job, `No se pudo traer el último commit del repositorio: ${cause.message}`);
+      return;
+    }
+  }
   const { code, steps, result, versions } = await runScript(pool, job);
   let finalResult = result;
   let error = null;
@@ -205,12 +352,12 @@ async function process_(pool, job) {
     }
   }
   // Respaldo nuevo y los que la retención del plan eliminó de S3.
-  if (code === 0 && job.action === 'backup' && result?.respaldo?.clave) {
+  if (code === 0 && ['backup', 'update'].includes(job.action) && result?.respaldo?.clave) {
     await pool.query(`
       INSERT INTO platform_backups (tenant_id, job_id, object_key, bucket, bytes, kind)
       VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (object_key) DO NOTHING
     `, [job.tenant.id, job.id, result.respaldo.clave, result.respaldo.bucket, result.respaldo.bytes,
-      job.params?.kind === 'manual' ? 'manual' : 'programado']);
+      job.params?.kind === 'programado' ? 'programado' : 'manual']);
     if (Array.isArray(result.eliminados) && result.eliminados.length) {
       await pool.query('UPDATE platform_backups SET deleted_at = now() WHERE object_key = ANY($1) AND deleted_at IS NULL', [result.eliminados]);
     }
@@ -251,12 +398,15 @@ async function process_(pool, job) {
     description: code === 0
       ? job.action === 'change_plan'
         ? `${DONE[job.action]}: ${job.params.fromPlan} → ${job.params.toPlan} (${job.tenant.engine}).`
+        : job.action === 'update'
+          ? `${DONE[job.action]} (${job.tenant.engine}${versions.repo_commit ? `, commit ${versions.repo_commit}` : ''}${result?.respaldo ? ', con respaldo previo' : ''}${job.params?.securityPatches ? ', con parches de seguridad' : ''}).`
         : `${DONE[job.action]}${['backup', 'restore'].includes(job.action) ? '' : ` (${job.tenant.engine})`}.`
       : `Falló: ${error}`,
     details: {
       jobId: job.id, engine: job.tenant.engine, region: job.tenant.region, plan: job.tenant.plan_id, duration,
       ...versionSummary(versions),
       ...(job.requested_by ? { requestedBy: job.requested_by } : {}),
+      ...(job.action === 'update' && job.previous ? { previous: job.previous } : {}),
       ...(job.params?.backupKey ? { backup: job.params.backupKey } : {}),
       ...(result?.respaldo ? { backup: result.respaldo.clave, size: `${Math.max(1, Math.round(result.respaldo.bytes / 1024))} KB` } : {}),
       steps: steps.map((step) => `${step.number}. ${step.title}: ${step.status}${step.summary ? ` · ${step.summary}` : ''}`),
@@ -270,6 +420,7 @@ async function process_(pool, job) {
     });
   }
   console.log(`Trabajo ${job.id}: ${code === 0 ? 'terminado' : 'falló'}`);
+  lastRepoCheck = 0; // las versiones desplegadas cambiaron: se vuelve a comparar
 }
 
 // Tenants creados antes de guardar el hash de su clave: se toma de generado/ (solo el
@@ -357,6 +508,7 @@ async function main() {
       if (job) await process_(pool, job);
       else {
         await scheduleBackups(pool);
+        await maybeCheckRepo(pool).catch((error) => console.error('Comprobación del repositorio.', error.message));
         await sleep(POLL_MS);
       }
     } catch (error) {

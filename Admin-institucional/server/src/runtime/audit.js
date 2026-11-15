@@ -3,7 +3,7 @@
 
 const ACTIONS = [
   'login', 'logout', 'request', 'registration', 'plan', 'invitation', 'activation',
-  'deployment', 'deletion', 'suspension', 'resumption', 'backup', 'restore', 'plan_change',
+  'deployment', 'deletion', 'suspension', 'resumption', 'backup', 'restore', 'plan_change', 'update',
 ];
 
 async function audit(db, event) {
@@ -42,7 +42,7 @@ async function listAudit(pool, limit = 300) {
 // Qué acción de auditoría corresponde a cada trabajo del worker.
 const JOB_ACTIONS = {
   create: 'deployment', delete: 'deletion', suspend: 'suspension', resume: 'resumption', backup: 'backup', restore: 'restore',
-  change_plan: 'plan_change',
+  change_plan: 'plan_change', update: 'update',
 };
 
 module.exports = { ACTIONS, JOB_ACTIONS, audit, listAudit };

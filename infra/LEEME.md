@@ -441,6 +441,26 @@ respaldos y restaurar. Programados según el plan (semanal o diario). Se guardan
 bucket `asistencia-respaldos-<cuenta>` (lo crea `infra/plataforma/respaldos.tf`). Detalle
 en DOCUMENTACION.md, sección 6.6.
 
-## Pendiente (requisitos opcionales)
+## Actualizar un tenant (RF-15)
 
-- **RF-15** actualizar desde el portal (hoy, manual: DOCUMENTACION.md 6.2).
+Desde el portal: **Actualizar versión** en la institución.
+
+- Antes de empezar muestra qué partes cambiaron desde su último despliegue: app,
+  plantillas del motor, Ansible, escaneos y políticas.
+- El worker trae el último commit de la rama.
+- Vuelve a pasar los escaneos y las políticas.
+- El motor aplica solo la diferencia.
+- Ansible despliega la app nueva.
+- Opciones:
+  - respaldo previo (por defecto);
+  - parches de seguridad del sistema (`dnf upgrade --security`, sin reiniciar).
+
+Detalle en DOCUMENTACION.md, sección 6.2.
+
+Para aplicarlo:
+
+1. `git push`.
+2. `plataforma.yml`. La migración 014 se aplica sola al reiniciar el portal.
+
+La primera comprobación completa el historial de la copia del worker
+(`git fetch --unshallow`).

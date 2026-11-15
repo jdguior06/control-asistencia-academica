@@ -3,7 +3,7 @@ const { timingSafeEqual } = require('node:crypto');
 const { createPool, migrate, transaction } = require('./db');
 const { InvitationError, allowedTenantOrigin, deliverInvitation, issueTenantInvitation, tenantIsActivated } = require('./invitations');
 const {
-  ProvisioningError, createInstitution, infrastructureState, latestJob, listBackups, regionCapacity, startJob,
+  ProvisioningError, createInstitution, infrastructureState, latestJob, listBackups, regionCapacity, startJob, updatePreview,
 } = require('./provisioning');
 const { audit, listAudit } = require('./audit');
 const { monitoringSnapshot, tenantStatus } = require('./monitoring');
@@ -32,7 +32,7 @@ const requestSelect = `
   LEFT JOIN LATERAL (
     SELECT action, status, finished_at FROM platform_jobs
     WHERE tenant_id = t.id AND status IN ('succeeded', 'failed')
-      AND action IN ('create', 'delete', 'suspend', 'resume', 'change_plan') ORDER BY created_at DESC LIMIT 1
+      AND action IN ('create', 'delete', 'suspend', 'resume', 'change_plan', 'update') ORDER BY created_at DESC LIMIT 1
   ) last ON true
   LEFT JOIN LATERAL (
     SELECT action FROM platform_jobs
@@ -503,6 +503,23 @@ function createApp(pool, platformOnly) {
     requireRequestId(request.params.id);
     response.status(201).json({
       job: await startJob(pool, request.params.id, 'change_plan', '', response.locals.user, { planId: request.body?.planId }),
+    });
+  });
+
+  // RF-15: actualizar (qué cambiaría y el trabajo que lo aplica).
+  platform.get('/requests/:id/update-preview', async (request, response) => {
+    requireRequestId(request.params.id);
+    const preview = await updatePreview(pool, request.params.id);
+    if (!preview) return response.status(404).json({ error: 'La institución no tiene infraestructura.' });
+    response.set('Cache-Control', 'no-store').json(preview);
+  });
+
+  platform.post('/requests/:id/update', async (request, response) => {
+    requireRequestId(request.params.id);
+    response.status(201).json({
+      job: await startJob(pool, request.params.id, 'update', '', response.locals.user, {
+        backupFirst: request.body?.backupFirst !== false, securityPatches: request.body?.securityPatches === true,
+      }),
     });
   });
 

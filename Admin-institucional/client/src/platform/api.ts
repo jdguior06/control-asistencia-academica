@@ -28,8 +28,8 @@ export interface InstallationStatus {
 export interface TenantInfrastructure {
   state: 'none' | 'ready' | 'suspended' | 'failed'
   deleted: boolean
-  activeAction?: 'create' | 'delete' | 'suspend' | 'resume' | 'backup' | 'restore' | 'change_plan'
-  lastAction?: 'create' | 'delete' | 'suspend' | 'resume' | 'change_plan'
+  activeAction?: 'create' | 'delete' | 'suspend' | 'resume' | 'backup' | 'restore' | 'change_plan' | 'update'
+  lastAction?: 'create' | 'delete' | 'suspend' | 'resume' | 'change_plan' | 'update'
   lastStatus?: 'succeeded' | 'failed'
   lastFinishedAt?: string
 }
@@ -75,7 +75,7 @@ export interface JobStep {
 // Un trabajo del worker: crear o eliminar la infraestructura de una institución.
 export interface ProvisioningJob {
   id: string
-  action: 'create' | 'delete' | 'suspend' | 'resume' | 'backup' | 'restore' | 'change_plan'
+  action: 'create' | 'delete' | 'suspend' | 'resume' | 'backup' | 'restore' | 'change_plan' | 'update'
   status: JobStatus
   steps: JobStep[]
   log: string
@@ -87,6 +87,29 @@ export interface ProvisioningJob {
   createdAt: string
   startedAt?: string
   finishedAt?: string
+}
+
+// RF-15: versión desplegada de una institución frente a la última del repositorio.
+export interface RepoCommit { commit: string; date?: string; subject?: string }
+export interface UpdatePart {
+  id: 'app' | 'templates' | 'ansible' | 'scripts'
+  label: string
+  current: string | null
+  available: RepoCommit | null
+  changed: boolean
+}
+export interface UpdatePreview {
+  engine: string
+  branch: string | null
+  deployed: { commit: string | null; date: string | null; at: string } | null
+  latest: (RepoCommit & { short?: string }) | null
+  checkedAt: string | null
+  checking: boolean
+  error: string | null
+  exact: boolean
+  changedFiles: number | null
+  parts: UpdatePart[]
+  upToDate: boolean
 }
 
 export type InfrastructureState = 'none' | 'ready' | 'suspended' | 'failed'
@@ -154,7 +177,7 @@ export interface MonitoringSnapshot {
 }
 
 export type AuditAction = 'login' | 'logout' | 'request' | 'registration' | 'plan' | 'invitation' | 'activation'
-  | 'deployment' | 'deletion' | 'suspension' | 'resumption' | 'backup' | 'restore' | 'plan_change'
+  | 'deployment' | 'deletion' | 'suspension' | 'resumption' | 'backup' | 'restore' | 'plan_change' | 'update'
 export type AuditResult = 'started' | 'completed' | 'pending' | 'failed'
 
 export interface AuditEvent {

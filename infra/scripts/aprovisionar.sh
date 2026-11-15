@@ -9,6 +9,8 @@
 #   bash scripts/aprovisionar.sh suspender|reanudar --slug utepsa --motor terraform --region us-east-2 --plan basico --numero 1
 #   bash scripts/aprovisionar.sh respaldar --slug utepsa --motor terraform --region us-east-2 --plan basico --numero 1
 #   bash scripts/aprovisionar.sh restaurar --slug utepsa ... --respaldo tenants/utepsa/20261115-030000.dump
+#   bash scripts/aprovisionar.sh actualizar --slug utepsa ... [--respaldar-antes si] [--parches si]
+#     (RF-15: el mismo flujo de crear sobre un tenant que ya existe: plantillas y app nuevas)
 #
 # Pasos al crear:
 #   1 Validar   2 Escaneo de seguridad del código   3 Plan y políticas (Conftest, Infracost)
@@ -27,6 +29,7 @@ INFRA=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # ------------------------------------------------------------------ marcas
 PASO=0
 paso()   { PASO=$1; echo "::paso::$1::$2"; }
+siguiente() { paso $(( PASO + 1 )) "$1"; }
 ok()     { echo "::ok::$PASO::$*"; }
 aviso()  { echo "::aviso::$PASO::$*"; }
 fallar() { echo "::error::$PASO::$*"; exit 1; }
@@ -34,15 +37,16 @@ titulo() { echo; echo "──── $* ────"; }
 trap 'echo "::error::$PASO::Falló: ${BASH_COMMAND:0:160}"' ERR
 
 # ------------------------------------------------------------------ entradas
-uso() { echo "Uso: $0 crear|borrar|suspender|reanudar|respaldar|restaurar --slug S --motor M --region R --plan P [--entorno E] --numero N [--respaldo CLAVE]"; exit 2; }
+uso() { echo "Uso: $0 crear|actualizar|borrar|suspender|reanudar|respaldar|restaurar --slug S --motor M --region R --plan P [--entorno E] --numero N [--respaldo CLAVE]"; exit 2; }
 accion=${1:-}; [[ $# -gt 0 ]] && shift
-slug=""; motor=""; region="us-east-2"; plan="basico"; entorno="production"; numero=0; respaldo=""; disco=0; conservar_desde=""
+slug=""; motor=""; region="us-east-2"; plan="basico"; entorno="production"; numero=0; respaldo=""; disco=0; conservar_desde=""; respaldar_antes=no; parches=no
 while [[ $# -gt 0 ]]; do
   [[ $# -ge 2 ]] || uso
   case $1 in
     --slug) slug=$2 ;; --motor) motor=$2 ;; --region) region=$2 ;;
     --plan) plan=$2 ;; --entorno) entorno=$2 ;; --numero) numero=$2 ;; --respaldo) respaldo=$2 ;;
     --disco) disco=$2 ;; --conservar-desde) conservar_desde=$2 ;;
+    --respaldar-antes) respaldar_antes=$2 ;; --parches) parches=$2 ;;
     *) uso ;;
   esac
   shift 2
@@ -63,8 +67,17 @@ print(d if not isinstance(d,(list,dict)) else json.dumps(d))' "$1" "$2"; }
 
 # ==================================================================== 1. validar
 paso 1 "Validar datos"
-[[ $accion =~ ^(crear|borrar|suspender|reanudar|respaldar|restaurar)$ ]] || fallar "acción '$accion' (crear, borrar, suspender, reanudar, respaldar o restaurar)"
+[[ $accion =~ ^(crear|actualizar|borrar|suspender|reanudar|respaldar|restaurar)$ ]] || fallar "acción '$accion' (crear, actualizar, borrar, suspender, reanudar, respaldar o restaurar)"
+# Actualizar (RF-15) es crear sobre lo que ya existe: los motores solo cambian lo que cambió
+# en las plantillas y Ansible lleva la app al último commit.
+actualizar=0
+if [[ $accion == actualizar ]]; then
+  actualizar=1
+  accion=crear
+fi
 [[ $slug =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && ${#slug} -ge 3 && ${#slug} -le 30 ]] || fallar "slug '$slug' no válido (3 a 30: minúsculas, números y guiones)"
+(( actualizar )) && { [[ -f $INFRA/generado/tenants/$slug.json ]] || fallar "el tenant no tiene infraestructura: créala primero"; }
+[[ $respaldar_antes =~ ^(si|no)$ && $parches =~ ^(si|no)$ ]] || fallar "--respaldar-antes y --parches: si o no"
 [[ $motor =~ ^(terraform|opentofu|pulumi|cloudformation)$ ]] || fallar "motor '$motor' no válido"
 [[ $region =~ ^(us-east-1|us-east-2|us-west-2)$ ]] || fallar "región '$region' no disponible (us-east-1, us-east-2, us-west-2)"
 [[ $plan =~ ^(basico|estandar|avanzado)$ ]] || fallar "plan '$plan' sin infraestructura definida"
@@ -201,8 +214,9 @@ fi
 # ==================================================================== respaldar / restaurar (RF-19)
 # El worker entra por SSH a la base del tenant (como en tenant.yml), hace pg_dump y guarda el
 # archivo en el bucket de respaldos de la plataforma: s3://<bucket>/tenants/<slug>/<fecha>.dump
-if [[ $accion == respaldar || $accion == restaurar ]]; then
-  DB=asistencia
+# Respaldo de la base (lo usan "respaldar" y "actualizar" con --respaldar-antes).
+DB=asistencia
+preparar_respaldos() {
   BUCKET=$(json "$PLATAFORMA" respaldos 2>/dev/null || true)
   [[ -n $BUCKET ]] || fallar "falta el bucket de respaldos (terraform apply en infra/plataforma y luego plataforma.yml)"
   [[ -f $INFRA/generado/tenants/$slug.json ]] || fallar "el tenant no tiene infraestructura creada"
@@ -213,41 +227,56 @@ if [[ $accion == respaldar || $accion == restaurar ]]; then
   cd "$INFRA/ansible"
   inv=(-i "inventarios/$slug.ini" -o)
   mkdir -p "$GEN/respaldos"
+}
+
+respaldo_copiar() { # deja el archivo en $archivo y su tamaño en $bytes
+  fecha=$(date -u +%Y%m%d-%H%M%S)
+  remoto="/tmp/respaldo-$slug.dump"
+  archivo="$GEN/respaldos/$fecha.dump"
+  ansible "$slug-base" "${inv[@]}" -b --become-user postgres -m shell -a "pg_dump -Fc -d $DB -f $remoto"
+  ansible "$slug-base" "${inv[@]}" -b -m fetch -a "src=$remoto dest=$archivo flat=yes" >/dev/null
+  ansible "$slug-base" "${inv[@]}" -b -m file -a "path=$remoto state=absent" >/dev/null
+  bytes=$(stat -c %s "$archivo")
+}
+
+respaldo_guardar() { # sube $archivo a S3 ($clave) y aplica la retención del plan ($eliminados)
+  clave="tenants/$slug/$fecha.dump"
+  aws s3 cp "$archivo" "s3://$BUCKET/$clave" --only-show-errors
+  rm -f "$archivo"
+  case $plan in basico) conservar=4 ;; estandar) conservar=7 ;; *) conservar=30 ;; esac
+  todas=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "tenants/$slug/" --query 'Contents[].Key' --output text | tr '\t' '\n' | grep -E '\.dump$' | sort || true)
+  # Los respaldos de antes de la infraestructura actual (antes de eliminarla y volver a
+  # crearla) no cuentan para la retención: solo caducan a los 90 días.
+  if [[ $conservar_desde =~ ^[0-9]{8}-[0-9]{6}$ ]]; then
+    todas=$(while read -r k; do [[ -n $k && $(basename "$k" .dump) > "$conservar_desde" ]] && echo "$k"; done <<<"$todas" || true)
+  fi
+  total=$(grep -c . <<<"$todas" || true)
+  eliminados=()
+  if (( total > conservar )); then
+    while read -r vieja; do
+      aws s3 rm "s3://$BUCKET/$vieja" --only-show-errors
+      eliminados+=("$vieja")
+    done < <(head -n $(( total - conservar )) <<<"$todas")
+  fi
+  echo "Respaldos de $slug en S3: $(( total - ${#eliminados[@]} )) (plan $plan: se conservan los últimos $conservar)"
+}
+
+respaldo_json() { # ::resultado:: del respaldo (clave, tamaño y los que se borraron)
+  python3 -c 'import json,sys; print(json.dumps({"respaldo":{"clave":sys.argv[1],"bytes":int(sys.argv[2]),"bucket":sys.argv[3]},"eliminados":sys.argv[4:]}))' \
+    "$clave" "$bytes" "$BUCKET" "${eliminados[@]}"
+}
+
+if [[ $accion == respaldar || $accion == restaurar ]]; then
+  preparar_respaldos
 
   if [[ $accion == respaldar ]]; then
     paso 2 "Copiar la base de datos (pg_dump)"
-    fecha=$(date -u +%Y%m%d-%H%M%S)
-    remoto="/tmp/respaldo-$slug.dump"
-    archivo="$GEN/respaldos/$fecha.dump"
-    ansible "$slug-base" "${inv[@]}" -b --become-user postgres -m shell -a "pg_dump -Fc -d $DB -f $remoto"
-    ansible "$slug-base" "${inv[@]}" -b -m fetch -a "src=$remoto dest=$archivo flat=yes" >/dev/null
-    ansible "$slug-base" "${inv[@]}" -b -m file -a "path=$remoto state=absent" >/dev/null
-    bytes=$(stat -c %s "$archivo")
+    respaldo_copiar
     ok "base $DB · $(numfmt --to=iec "$bytes")B"
-
     paso 3 "Guardar en S3 y aplicar la retención del plan"
-    clave="tenants/$slug/$fecha.dump"
-    aws s3 cp "$archivo" "s3://$BUCKET/$clave" --only-show-errors
-    rm -f "$archivo"
-    case $plan in basico) conservar=4 ;; estandar) conservar=7 ;; *) conservar=30 ;; esac
-    todas=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "tenants/$slug/" --query 'Contents[].Key' --output text | tr '\t' '\n' | grep -E '\.dump$' | sort || true)
-    # Los respaldos de antes de la infraestructura actual (antes de eliminarla y volver a
-    # crearla) no cuentan para la retención: solo caducan a los 90 días.
-    if [[ $conservar_desde =~ ^[0-9]{8}-[0-9]{6}$ ]]; then
-      todas=$(while read -r k; do [[ -n $k && $(basename "$k" .dump) > "$conservar_desde" ]] && echo "$k"; done <<<"$todas" || true)
-    fi
-    total=$(grep -c . <<<"$todas" || true)
-    eliminados=()
-    if (( total > conservar )); then
-      while read -r vieja; do
-        aws s3 rm "s3://$BUCKET/$vieja" --only-show-errors
-        eliminados+=("$vieja")
-      done < <(head -n $(( total - conservar )) <<<"$todas")
-    fi
-    echo "Respaldos de $slug en S3: $(( total - ${#eliminados[@]} )) (plan $plan: se conservan los últimos $conservar)"
+    respaldo_guardar
     ok "s3://$BUCKET/$clave${eliminados:+ · ${#eliminados[@]} antiguo(s) eliminado(s)}"
-    python3 -c 'import json,sys; print("::resultado::"+json.dumps({"respaldo":{"clave":sys.argv[1],"bytes":int(sys.argv[2]),"bucket":sys.argv[3]},"eliminados":sys.argv[4:]}))' \
-      "$clave" "$bytes" "$BUCKET" "${eliminados[@]}"
+    echo "::resultado::$(respaldo_json)"
     exit 0
   fi
 
@@ -344,8 +373,21 @@ if [[ $accion == borrar ]]; then
   exit 0
 fi
 
+# ==================================================================== actualizar: respaldo previo
+respaldo_previo=""
+if (( actualizar )) && [[ $respaldar_antes == si ]]; then
+  siguiente "Respaldo previo de la base de datos"
+  pushd . >/dev/null # preparar_respaldos cambia de carpeta
+  preparar_respaldos
+  respaldo_copiar
+  respaldo_guardar
+  popd >/dev/null
+  respaldo_previo=$(respaldo_json)
+  ok "s3://$BUCKET/$clave · $(numfmt --to=iec "$bytes")B (se puede restaurar si la actualización sale mal)"
+fi
+
 # ==================================================================== 2. escaneo
-paso 2 "Escaneo de seguridad del código"
+siguiente "Escaneo de seguridad del código"
 resumen=()
 advertencias=0
 
@@ -441,7 +483,7 @@ texto=$(printf '%s · ' "${resumen[@]}"); texto=${texto% · }
 if (( advertencias )); then aviso "$texto"; else ok "$texto"; fi
 
 # ==================================================================== 3. plan y políticas
-paso 3 "Plan y políticas del equipo"
+siguiente "Plan y políticas del equipo"
 politicas() { # politicas archivo.json namespace
   titulo "Conftest (politicas/$2.rego)"
   salida=$(conftest test "$1" -p "$INFRA/politicas" --namespace "$2" --no-color 2>&1) && codigo=0 || codigo=$?
@@ -541,7 +583,7 @@ texto="Conftest sin rechazos (${avisos_politica:-0} avisos) · $costo"
 if (( ${avisos_politica:-0} > 0 )); then aviso "$texto"; else ok "$texto"; fi
 
 # ==================================================================== 4. crear
-paso 4 "Crear la infraestructura ($motor)"
+siguiente "$( (( actualizar )) && echo "Actualizar" || echo "Crear") la infraestructura ($motor)"
 case $motor in
   terraform|opentofu)
     cd "$DIR"
@@ -597,7 +639,7 @@ versiones "imagen=$imagen" "imagen_nombre=$imagen_nombre"
 ok "red 10.$numero.0.0/16, peering y 3 servidores · imagen ${imagen_nombre:-${imagen:-?}}"
 
 # ==================================================================== 5. ansible
-paso 5 "Configurar con Ansible"
+siguiente "Configurar con Ansible"
 cd "$INFRA"
 python3 scripts/inventario.py "$slug" --en-plataforma
 cd "$INFRA/ansible"
@@ -610,12 +652,27 @@ if [[ -f $GEN/version-app.json ]]; then
 fi
 ok "app, base de datos, agentes y ruta en el gateway ($(( (SECONDS - inicio) / 60 )) min)"
 
+# ==================================================================== actualizar: parches
+if (( actualizar )) && [[ $parches == si ]]; then
+  siguiente "Parches de seguridad del sistema (dnf)"
+  ansible tenant -i "inventarios/$slug.ini" -b -m ansible.builtin.dnf -a "name=* state=latest security=true update_only=true"
+  # needs-restarting -r: 1 = hace falta reiniciar (kernel o glibc nuevos), 0 = no.
+  reinicio=$(ansible tenant -i "inventarios/$slug.ini" -b -o -m shell -a "dnf needs-restarting -r >/dev/null 2>&1; echo codigo=\$?" 2>/dev/null | grep -c 'codigo=1' || true)
+  if (( reinicio > 0 )); then
+    aviso "parches instalados; $reinicio servidor(es) necesitan reiniciar para aplicar el kernel (no se reinician solos)"
+  else
+    ok "parches de seguridad instalados (sin reinicio pendiente)"
+  fi
+fi
+
 # ==================================================================== 6. verificar
-paso 6 "Verificar"
+siguiente "Verificar"
 url="http://$slug.$DOMINIO"
 codigo=$(curl -s -o /dev/null -w '%{http_code}' -m 15 -H "Host: $slug.$DOMINIO" http://127.0.0.1/api/health || true)
 [[ $codigo == 200 ]] || fallar "$url/api/health respondió $codigo"
 echo "$url/api/health → 200 (gateway → peering → frontend → backend → base)"
 ok "$url responde"
-python3 -c 'import json,sys; print("::resultado::"+json.dumps({"url":sys.argv[1],"motor":sys.argv[2],"region":sys.argv[3],"imagen":sys.argv[4] or None}))' \
-  "$url" "$motor" "$region" "$imagen"
+python3 -c 'import json,sys
+r={"url":sys.argv[1],"motor":sys.argv[2],"region":sys.argv[3],"imagen":sys.argv[4] or None}
+if sys.argv[5]: r.update(json.loads(sys.argv[5]))
+print("::resultado::"+json.dumps(r))' "$url" "$motor" "$region" "$imagen" "$respaldo_previo"

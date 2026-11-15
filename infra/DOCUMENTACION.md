@@ -233,21 +233,64 @@ Si falla: el paso en rojo dice por qué; **Reintentar creación** retoma sin dup
 
 ### 6.2 Actualizar la aplicación y la infraestructura
 
-La aplicación se actualiza volviendo a aplicar Ansible (descarga el último commit de la
-rama `plataforma`, recompila solo si cambió y reinicia los servicios):
+Desde el portal: **Instituciones → (institución) → Actualizar versión** (RF-15). Antes de
+empezar se ve qué cambiaría:
+
+| Parte | Desplegada | Disponible |
+|---|---|---|
+| Aplicación (`admin-docente-alumno`) | commit con el que se desplegó | último commit de la rama que la toca |
+| Plantillas de infraestructura (`tenant/<motor>/`) | ídem | ídem |
+| Configuración (`ansible/`) | ídem | ídem |
+| Escaneos y políticas (`scripts/`, `politicas/`) | — | ídem |
+
+Cada fila dice "hay cambios" o "sin cambios". La comparación la hace el worker (tiene la
+copia del repositorio): cada 10 minutos, y al abrir "Actualizar versión" si la última
+tiene más de 1 minuto. Hace `git fetch` y `git diff` entre el commit desplegado del tenant
+y el último de la rama. Se guarda en la tabla `platform_repo`.
+
+Opciones:
+
+- **Respaldar antes de actualizar** (marcada por defecto): `pg_dump` a S3 antes de tocar
+  nada. Queda en la lista de respaldos y se puede restaurar (6.6).
+- **Instalar también los parches de seguridad del sistema** (desmarcada): en los 3
+  servidores se instalan solo las actualizaciones de seguridad (`dnf upgrade --security`).
+  Los servidores **no se reinician**. Si el kernel lo pide (`dnf needs-restarting -r`),
+  el paso queda en aviso.
+
+El trabajo (`update` en `platform_jobs`, `aprovisionar.sh actualizar`) sigue estos pasos:
+
+1. El worker pasa su copia del repositorio al último commit de la rama
+   (`git fetch` + `git reset --hard`). Los archivos fuera de git se conservan
+   (`generado/`, `.terraform/`, `Pulumi.<slug>.yaml`).
+2. Validar los datos.
+3. Respaldo previo (opcional).
+4. Escaneo de seguridad del código.
+5. Plan y políticas del equipo.
+6. Actualizar la infraestructura con el mismo motor que la creó:
+   - el motor solo aplica la diferencia;
+   - el disco actual se mantiene (`--disco`);
+   - las políticas rechazan borrar o reemplazar servidores.
+7. Ansible:
+   - descarga el commit nuevo;
+   - recompila solo si cambió;
+   - aplica las migraciones de la base;
+   - reinicia los servicios.
+8. Parches de seguridad (opcional).
+9. Verificar (`/api/health`).
+
+Las versiones (RF-13) quedan en el trabajo. La auditoría registra la acción
+"Actualización" con la versión anterior y la nueva. Si algo falla, la infraestructura
+sigue "Activa" y se puede reintentar, o restaurar el respaldo previo.
+
+A mano, desde el servidor (lo mismo que hace el worker):
 
 ```bash
 ssh ec2-user@<ip plataforma>
 sudo -iu iac                                   # queda en /opt/iac/repo/infra
-git -C .. pull                                 # o: plataforma.yml actualiza esta copia
-python3 scripts/inventario.py <slug> --en-plataforma
-cd ansible && ansible-playbook -i inventarios/<slug>.ini tenant.yml -e tenant_invitacion=true
+git -C .. pull
+bash scripts/aprovisionar.sh actualizar --slug <slug> --motor <motor> --region <región> \
+  --plan <plan> --entorno production --numero <N> --respaldar-antes si --parches no
 ```
-
-La infraestructura se actualiza con el mismo motor que la creó: cambiar el código en
-`tenant/<motor>/` y volver a ejecutar `aprovisionar.sh crear` con los mismos datos (el
-motor calcula solo la diferencia; las políticas rechazan los cambios que borran o
-reemplazan servidores). Cada ejecución registra sus versiones (RF-13).
 
 ### 6.3 Suspender
 
@@ -467,7 +510,7 @@ Los requisitos tachados en el documento del proyecto son opcionales (marcados *o
 | RF-12 Reintentar sin duplicar | ✅ | Reintentar creación (estado del motor + Ansible idempotente) |
 | RF-13 Versiones en cada despliegue | ✅ | "Versiones usadas en este trabajo" y Auditoría |
 | RF-14 Consultar por nombre, estado, plan y entorno | ✅ | Instituciones: buscador y filtros |
-| RF-15 Actualizar app e infraestructura *(opc.)* | Manual | [6.2](#62-actualizar-la-aplicación-y-la-infraestructura) |
+| RF-15 Actualizar app e infraestructura *(opc.)* | Cumplido (botón «Actualizar versión») | [6.2](#62-actualizar-la-aplicación-y-la-infraestructura) |
 | RF-16 Suspender y reanudar | ✅ | Botones Suspender / Reanudar |
 | RF-17 Suspensión y retención | ✅ | [Política](#7-política-de-suspensión-y-retención) |
 | RF-18 Mostrar qué se elimina y confirmar | ✅ | Resumen antes de eliminar + escribir el slug |

@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import {
   ArrowDownToLine, Check, CircleAlert, Clock3, Copy, Download, ExternalLink, Layers3, LoaderCircle, Maximize2, Pause, Play,
-  Power, RotateCcw, ServerCog, Terminal, Trash2, X,
+  Power, RefreshCw, RotateCcw, ServerCog, Terminal, Trash2, X,
 } from 'lucide-react'
 import { ApiError, api, errorMessage, formatDate, webLink, type Plan, type ProvisioningJob, type TenantConfiguration } from './api'
 import { engines, optionLabel, regions } from './tenant-options'
 import { jobLabel, stepIcons } from './job-labels'
 import ChangePlan from './ChangePlan'
+import UpdateTenant from './UpdateTenant'
 import './provisioning.css'
 
 // Infraestructura de una institución: la crea o la elimina el worker de la plataforma
@@ -180,6 +181,7 @@ export default function Provisioning({ requestId, tenant, plan, plans = [], onFi
   const [confirmation, setConfirmation] = useState('')
   const [logOpen, setLogOpen] = useState(false)
   const [changingPlan, setChangingPlan] = useState(false)
+  const [updating, setUpdating] = useState(false)
   const logRef = useRef<HTMLPreElement>(null)
   const followLog = useRef(true)
   const active = job?.status === 'queued' || job?.status === 'running'
@@ -308,7 +310,11 @@ export default function Provisioning({ requestId, tenant, plan, plans = [], onFi
         {(canCreate || canRetryCreate) && <button type="button" className="pa-primary" disabled={busy} onClick={() => void start('provision')}>
           {canRetryCreate ? <><RotateCcw size={16} /> Reintentar creación</> : <><Play size={16} /> Crear infraestructura</>}
         </button>}
-        {canSuspend && plan && !changingPlan && <button type="button" className="pa-secondary" disabled={busy} onClick={() => { setChangingPlan(true); setConfirmDelete(false) }}>
+        {canSuspend && !updating && <button type="button" className="pa-secondary" disabled={busy} onClick={() => { setUpdating(true); setChangingPlan(false); setConfirmDelete(false) }}
+          title="Lleva la app y las plantillas al último commit de la rama">
+          <RefreshCw size={15} /> Actualizar versión
+        </button>}
+        {canSuspend && plan && !changingPlan && <button type="button" className="pa-secondary" disabled={busy} onClick={() => { setChangingPlan(true); setUpdating(false); setConfirmDelete(false) }}>
           <Layers3 size={15} /> Cambiar plan
         </button>}
         {canSuspend && <button type="button" className="pa-secondary" disabled={busy} onClick={() => void start('suspend')}
@@ -322,6 +328,16 @@ export default function Provisioning({ requestId, tenant, plan, plans = [], onFi
           <Trash2 size={15} /> {job?.action === 'delete' ? 'Reintentar eliminación' : 'Eliminar infraestructura'}
         </button>}
       </div>
+
+      {updating && canSuspend && <UpdateTenant requestId={requestId}
+        onCancel={() => setUpdating(false)} onSessionExpired={onSessionExpired}
+        onStarted={started => {
+          followLog.current = true
+          lastJob.current = started
+          setJob(started)
+          setUpdating(false)
+          onFinished()
+        }} />}
 
       {changingPlan && canSuspend && plan && <ChangePlan requestId={requestId} tenant={tenant} plans={plans} currentPlanId={plan.id}
         onCancel={() => setChangingPlan(false)} onSessionExpired={onSessionExpired}

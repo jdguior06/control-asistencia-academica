@@ -16,7 +16,7 @@ class ProvisioningError extends Error {
 const PROVISIONABLE_REGIONS = ['us-east-2', 'us-east-1', 'us-west-2'];
 
 // Trabajos que cambian la infraestructura (los respaldos no cambian su estado).
-const INFRA_ACTIONS = "action IN ('create', 'delete', 'suspend', 'resume', 'change_plan')";
+const INFRA_ACTIONS = "action IN ('create', 'delete', 'suspend', 'resume', 'change_plan', 'update')";
 const BACKUP_ACTIONS = "action IN ('backup', 'restore')";
 // Instituciones con infraestructura por región, según las cuotas de la cuenta (vCPU y VPC).
 // Cada tenant usa 6 vCPU y 1 VPC. PLATFORM_TENANTS_PER_REGION: un número para todas las
@@ -135,6 +135,8 @@ function infrastructureState(last) {
     // Cambio de plan: si falla, los servidores siguen encendidos (con el plan anterior o a
     // medio cambiar) y se puede volver a intentar.
     case 'change_plan': return 'ready';
+    // Actualizar (RF-15): igual, la infraestructura sigue ahí y se puede reintentar.
+    case 'update': return 'ready';
     default: return 'none';
   }
 }
@@ -147,6 +149,7 @@ const descriptions = {
   backup: 'Se inició un respaldo de la base de datos',
   change_plan: 'Se inició el cambio de plan',
   restore: 'Se inició la restauración de la base de datos',
+  update: 'Se inició la actualización',
 };
 
 async function enqueue(client, tenant, action, user, params = {}) {
@@ -190,6 +193,7 @@ async function enqueue(client, tenant, action, user, params = {}) {
       resource: tenant.institution_name ?? tenant.slug, reference: tenant.slug,
       description: action === 'change_plan' ? `${descriptions[action]} (${params.fromPlan} → ${params.toPlan}, ${tenant.engine}).`
         : action === 'restore' ? `${descriptions[action]} (${params.backupKey}).`
+        : action === 'update' ? `${descriptions[action]} (${tenant.engine}${params.backupFirst ? ', con respaldo previo' : ''}${params.securityPatches ? ', con parches de seguridad' : ''}).`
         : action === 'backup' ? `${descriptions[action]}.` : `${descriptions[action]} con ${tenant.engine}.`,
       details: { jobId: job.id, engine: tenant.engine, region: tenant.region, plan: tenant.plan_id, ...(params.backupKey ? { backup: params.backupKey } : {}) },
     });
@@ -285,6 +289,16 @@ async function startJob(pool, requestId, action, confirmation, user, options = {
       const disk = tenant.engine === 'cloudformation' ? current : Math.max(current, disks[toPlan] ?? current);
       return enqueue(client, tenant, action, user, { fromPlan: tenant.plan_id, toPlan, disk });
     }
+    if (action === 'update') {
+      if (state !== 'ready') throw new ProvisioningError(409, 'Solo se puede actualizar con la infraestructura lista y encendida.');
+      // El disco se mantiene: sin esto el motor volvería al disco del plan (y con
+      // CloudFormation cambiarlo reemplazaría el servidor).
+      const disks = await planDisks(client);
+      const disk = tenant.disk_gb ?? disks[tenant.plan_id] ?? 0;
+      return enqueue(client, tenant, action, user, {
+        backupFirst: options.backupFirst !== false, securityPatches: options.securityPatches === true, disk,
+      });
+    }
     if (action === 'restore') {
       const { rows: [backup] } = await client.query(`
         SELECT object_key FROM platform_backups WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
@@ -307,6 +321,59 @@ async function latestJob(pool, requestId, kind = 'infra') {
     ORDER BY j.created_at DESC LIMIT 1
   `, [requestId]);
   return serializeJob(row);
+}
+
+// RF-15: con qué versión está desplegada la institución y cuál hay en el repositorio. La
+// comparación (git diff) la hace el worker, que tiene la copia del repositorio; al abrir
+// "Actualizar" el portal le pide una comprobación nueva si la última tiene más de 1 minuto.
+async function updatePreview(pool, requestId) {
+  const { rows: [tenant] } = await pool.query(`
+    SELECT t.id, t.slug, t.engine FROM platform_tenants t WHERE t.request_id = $1
+  `, [requestId]);
+  if (!tenant) return null;
+  await pool.query(`
+    UPDATE platform_repo SET requested_at = now()
+    WHERE id AND coalesce(checked_at, '-infinity') < now() - interval '1 minute'
+      AND coalesce(requested_at, '-infinity') <= coalesce(checked_at, '-infinity')
+  `);
+  const { rows: [deployed] } = await pool.query(`
+    SELECT versions, finished_at FROM platform_jobs
+    WHERE tenant_id = $1 AND status = 'succeeded' AND action IN ('create', 'change_plan', 'update')
+    ORDER BY created_at DESC LIMIT 1
+  `, [tenant.id]);
+  const { rows: [repo] } = await pool.query(`
+    SELECT data, checked_at, requested_at > coalesce(checked_at, '-infinity') AS checking FROM platform_repo WHERE id
+  `);
+  const v = deployed?.versions ?? {};
+  const data = repo?.data ?? {};
+  const diff = data.tenants?.[tenant.slug];
+  const sameCommit = (a, b) => Boolean(a && b && (a.startsWith(b) || b.startsWith(a)));
+  const part = (id, label, current, available) => ({
+    id, label,
+    current: current ?? null,
+    available: available ?? null,
+    // Con el diff del worker; si no lo hay, comparando los commits.
+    changed: diff && !diff.unknown ? Boolean(diff[id]) : Boolean(current && available?.commit && !sameCommit(current, available.commit)),
+  });
+  const parts = [
+    part('app', 'Aplicación (admin-docente-alumno)', v.app_commit, data.app),
+    part('templates', `Plantillas de infraestructura (${tenant.engine})`, v.plantilla_commit, data.templates?.[tenant.engine]),
+    part('ansible', 'Configuración (Ansible)', v.ansible_commit, data.ansible),
+    part('scripts', 'Escaneos y políticas', null, data.scripts),
+  ];
+  return {
+    engine: tenant.engine,
+    branch: data.branch ?? v.repo_rama ?? null,
+    deployed: deployed ? { commit: v.repo_commit ?? null, date: v.repo_fecha ?? null, at: deployed.finished_at } : null,
+    latest: data.repo ?? null,
+    checkedAt: repo?.checked_at ?? null,
+    checking: Boolean(repo?.checking),
+    error: data.error ?? null,
+    exact: Boolean(diff && !diff.unknown),
+    changedFiles: diff?.files ?? null,
+    parts,
+    upToDate: Boolean(data.repo?.commit && v.repo_commit && sameCommit(v.repo_commit, data.repo.commit)),
+  };
 }
 
 // Respaldos disponibles (RF-19) y la política del plan.
@@ -373,5 +440,5 @@ async function tenantStates(pool) {
 module.exports = {
   PROVISIONABLE_PLANS, PROVISIONABLE_REGIONS, ProvisioningError,
   BACKUP_POLICY, INFRA_ACTIONS, createInstitution, planDisks, infrastructureState, latestJob, listBackups, regionCapacity,
-  serializeJob, startJob, tenantStates,
+  serializeJob, startJob, tenantStates, updatePreview,
 };
