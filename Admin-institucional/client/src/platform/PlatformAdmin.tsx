@@ -16,6 +16,7 @@ import PlatformHome from './PlatformHome'
 import PlatformMonitoring from './PlatformMonitoring'
 import PlatformSettings from './PlatformSettings'
 import Provisioning from './Provisioning'
+import Backups from './Backups'
 import { engines, environments, optionLabel, regions, slugFromName, type Provider } from './tenant-options'
 import { infraStatus, infraStatusLabels, infraStatusText, type InfraStatus } from './infra-status'
 import './admin.css'
@@ -310,6 +311,8 @@ function RequestDetail({ request, plan, onRegistered, onInvitationUpdated, onRel
             <div><dt>Motor</dt><dd>{optionLabel(engines, request.tenant.engine)}</dd></div>
           </dl>}
           {request.tenant && <Provisioning requestId={request.id} tenant={request.tenant} plan={plan} onFinished={onReload} onActiveChange={setProvisioning} onSessionExpired={onSessionExpired} />}
+          {request.tenant && request.tenant.infrastructure && request.tenant.infrastructure.state !== 'none' &&
+            <Backups requestId={request.id} tenant={request.tenant} onSessionExpired={onSessionExpired} />}
           {request.tenant && !provisioning && !request.tenant.infrastructure?.deleted && <Installation requestId={request.id} tenant={request.tenant} onUpdated={onInvitationUpdated} onSessionExpired={onSessionExpired} />}
         </section> : <form className="pa-register-form" onSubmit={register} aria-labelledby="pa-register-title">
           <h3 id="pa-register-title">Configurar institución</h3>

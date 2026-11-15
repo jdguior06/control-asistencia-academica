@@ -1,0 +1,19 @@
+/* Respaldos de una institución (Backups.tsx). */
+.bk { margin-top: 18px; padding-top: 15px; border-top: 1px solid var(--pa-line); }
+.bk .pa-installation-heading { flex-wrap: wrap; }
+.bk .pa-installation-heading > div { flex: 1 1 220px; min-width: 0; }
+.bk .pa-error { margin-top: 12px; }
+.bk-link {
+  display: inline-flex; align-items: center; gap: 5px; margin-top: 10px; padding: 3px 0; border: 0; background: transparent;
+  color: var(--pa-purple-dark); font: inherit; font-size: 12px; font-weight: 650; cursor: pointer;
+}
+.bk-link:hover { text-decoration: underline; }
+.bk-list { display: grid; gap: 6px; margin: 12px 0 0; padding: 0; list-style: none; }
+.bk-list li {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px;
+  border: 1px solid var(--pa-line); border-radius: 9px; background: #fff;
+}
+.bk-list li > div { display: grid; gap: 1px; min-width: 0; }
+.bk-list strong { font-size: 12px; }
+.bk-list small { color: var(--pa-muted); font-size: 11px; }
+.bk-list .pa-secondary { flex: none; min-height: 32px; padding: 0 10px; font-size: 12px; }

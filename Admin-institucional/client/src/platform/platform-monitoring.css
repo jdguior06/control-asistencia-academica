@@ -162,3 +162,4 @@
 .pm-timeline p { color: var(--pm-muted); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
 .pm-timeline-dot { width: 10px; height: 10px; margin-top: 4px; border-radius: 50%; background: #43a072; box-shadow: 0 0 0 3px #e4f7ec; }
 .pm-timeline-firing .pm-timeline-dot { background: #c94848; box-shadow: 0 0 0 3px #fdecec; }
+.pm-during-job { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 5px; background: #f2f0f6; color: var(--pm-muted); font-size: 10px; font-weight: 650; }

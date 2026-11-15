@@ -193,7 +193,7 @@ cuadro en Pulumi y CloudFormation, y en la base del portal).
 | Disco de cada servidor (gp3, cifrado) | 20 GB | 30 GB | 40 GB |
 | Disco de la base de datos | 20 GB | 30 GB | 40 GB |
 | Límite de estudiantes (referencia) | 100 | 1 000 | 5 000 |
-| Respaldo previsto | Semanal | Diario | Diario con retención ampliada |
+| Respaldo automático (retención) | Semanal (últimos 4) | Diario (últimos 7) | Diario con retención ampliada (últimos 30) |
 | vCPU en total | 6 | 6 | 6 |
 
 Notas:
@@ -203,9 +203,10 @@ Notas:
   infraestructura definida en los motores.
 - Las políticas del equipo (`politicas/`) rechazan cualquier tipo de servidor que no esté
   en la lista permitida, con los 4 motores.
-- El **límite de estudiantes** y el **respaldo automático** corresponden a los requisitos
-  opcionales RF-05 y RF-19: hoy son valores de referencia del plan (ver
-  [6.6](#66-respaldar-y-restaurar-procedimiento-manual) para el respaldo manual).
+- El **respaldo** se hace solo con la frecuencia del plan y conserva los últimos 4, 7 o 30
+  ([6.6](#66-respaldar-y-restaurar)).
+- El **límite de estudiantes** corresponde al requisito opcional RF-05: hoy es un valor de
+  referencia del plan.
 
 ---
 
@@ -264,36 +265,37 @@ y grupos de seguridad; el peering y la ruta en la plataforma; los 3 servidores c
 y disco; **los datos de la base**; la ruta del gateway y el monitoreo; el estado del motor.
 Para confirmar hay que escribir el identificador del tenant.
 
-Se conserva: el registro de la institución, el historial de trabajos, la auditoría y las
-contraseñas archivadas en `generado/borrados/<slug>-<fecha>/` del servidor.
+Se conserva: el registro de la institución, el historial de trabajos, la auditoría, las
+contraseñas archivadas en `generado/borrados/<slug>-<fecha>/` del servidor y los
+**respaldos** en S3 (hasta 90 días).
 
-### 6.6 Respaldar y restaurar (procedimiento manual)
+### 6.6 Respaldar y restaurar
 
-La automatización desde el portal es el requisito opcional RF-19. Mientras tanto, el
-respaldo y la restauración se hacen desde el servidor de la plataforma, como `iac`:
+Instituciones → el tenant → **Respaldos de la base de datos** (RF-19):
+
+- **Respaldar ahora:** el worker entra a la base del tenant, hace `pg_dump` y guarda el
+  archivo en el bucket privado y cifrado `asistencia-respaldos-<cuenta>`
+  (`tenants/<slug>/<fecha>.dump`). Queda en la lista con fecha, tamaño y si fue manual o
+  programado.
+- **Programado según el plan:** Básico, semanal (se conservan 4); Estándar, diario (7);
+  Avanzado, diario con retención ampliada (30). El primero se hace una hora después de que
+  la infraestructura queda lista. Los que exceden la retención se borran de S3, y S3 borra
+  cualquier respaldo de más de 90 días.
+- **Restaurar:** botón **Restaurar** en un respaldo, con confirmación (escribir el
+  identificador). La copia se carga primero en una base aparte; recién si terminó bien se
+  detiene la API unos segundos, se intercambian las bases y se verifica `/api/health`. Si
+  algo falla antes, la base actual no se toca; si falla la verificación, la anterior queda
+  guardada como `asistencia_anterior`.
+- Necesita la infraestructura **encendida** (reanudar si está suspendida). Los respaldos
+  **se conservan al eliminar** la infraestructura: se pueden restaurar al volver a crearla.
+- Todo queda en Auditoría (quién lo pidió, archivo, tamaño, resultado).
+
+Por línea de comandos (como el worker), en el servidor de la plataforma como `iac`:
 
 ```bash
-ssh ec2-user@<ip plataforma>
-sudo -iu iac
-python3 scripts/inventario.py <slug> --en-plataforma && cd ansible
-I="-i inventarios/<slug>.ini"
-
-# Respaldar: volcado de la base "asistencia" y copia al servidor de la plataforma
-ansible <slug>-base $I -b --become-user postgres -m shell \
-  -a "pg_dump -Fc asistencia > /tmp/asistencia.dump"
-ansible <slug>-base $I -b -m fetch \
-  -a "src=/tmp/asistencia.dump dest=~/respaldos/<slug>-$(date +%Y%m%d-%H%M).dump flat=yes"
-
-# Restaurar: detener la API, reemplazar los datos y encender la API
-ansible <slug>-backend $I -b -m systemd -a "name=asistencia-api state=stopped"
-ansible <slug>-base $I -b -m copy -a "src=~/respaldos/<archivo>.dump dest=/tmp/asistencia.dump mode=0644"
-ansible <slug>-base $I -b --become-user postgres -m shell \
-  -a "pg_restore --clean --if-exists -d asistencia /tmp/asistencia.dump"
-ansible <slug>-backend $I -b -m systemd -a "name=asistencia-api state=started"
+bash scripts/aprovisionar.sh respaldar --slug <slug> --motor <motor> --region <region> --plan <plan> --numero <N>
+bash scripts/aprovisionar.sh restaurar --slug <slug> ... --respaldo tenants/<slug>/<fecha>.dump
 ```
-
-Alternativa a nivel de disco: una instantánea (snapshot) EBS del volumen del servidor
-`base` desde la consola de EC2 o con `aws ec2 create-snapshot`.
 
 ---
 
@@ -303,7 +305,7 @@ Alternativa a nivel de disco: una instantánea (snapshot) EBS del volumen del se
 | --- | --- | --- | --- | --- |
 | **Activa** | Encendidos | En el disco del servidor `base` | Cómputo + discos | Prometheus y alertas |
 | **Suspendida** | Apagados (`stopped`) | **Se conservan** completos y sin límite de tiempo | Solo los discos gp3 (sin horas de cómputo ni vCPU de la cuota) | Prometheus deja de verlos; el gateway responde 502 |
-| **Eliminada** | Borrados | **Se pierden** (salvo un respaldo manual previo) | Ninguno | — |
+| **Eliminada** | Borrados | Se pierden de los servidores; **quedan los respaldos** en S3 (hasta 90 días) | Solo los respaldos en S3 | — |
 
 - Suspender **no** toca el estado del motor: al reanudar no hay que volver a aplicar nada.
 - Al reanudar, los servidores mantienen su IP privada (la red y el gateway siguen igual);
@@ -400,7 +402,7 @@ cada tenant (ver [6.2](#62-actualizar-la-aplicación-y-la-infraestructura)).
 | RF-26 Disponibilidad, CPU, memoria, latencia, errores, base | API `/api/health` (http_check), agentes `up`, CPU/memoria/disco (node_exporter), latencia de la API, **errores 5xx** (registro de `/api` contado por el Collector), conexiones, tamaño y transacciones de PostgreSQL |
 | RF-27 Por tenant y por entorno | Variables `entorno` y `tenant` en Grafana; filtro de entorno en Monitoreo del portal |
 | RF-28 Alertas | Servidor o agente sin respuesta, API sin respuesta, servicio detenido, CPU > 85 %, memoria > 90 %, disco > 85 %, conexiones de PostgreSQL > 80 %, **más de 5 errores 5xx en 5 minutos** |
-| RF-29 Alertas y eventos en la plataforma | Grafana avisa al portal; Monitoreo muestra las alertas activas (tenant, servidor, hora de detección) y los eventos de las últimas 24 h. Correo opcional al operador y al administrador del tenant |
+| RF-29 Alertas y eventos en la plataforma | Grafana avisa al portal; Monitoreo muestra las alertas activas (tenant, servidor, hora de detección) y los eventos de las últimas 24 h. Correo opcional al operador y al administrador del tenant. Las alertas de un tenant durante un trabajo de la plataforma (o hasta 10 minutos después) se marcan "durante el despliegue" y no envían correo |
 
 **Alerta de ejemplo para la demo:** detener la API de un tenant
 (`ansible <slug>-backend -i inventarios/<slug>.ini -b -m systemd -a "name=asistencia-api state=stopped"`).
@@ -452,7 +454,7 @@ Los requisitos tachados en el documento del proyecto son opcionales (marcados *o
 | RF-16 Suspender y reanudar | ✅ | Botones Suspender / Reanudar |
 | RF-17 Suspensión y retención | ✅ | [Política](#7-política-de-suspensión-y-retención) |
 | RF-18 Mostrar qué se elimina y confirmar | ✅ | Resumen antes de eliminar + escribir el slug |
-| RF-19 Respaldar y restaurar *(opc.)* | Manual | [6.6](#66-respaldar-y-restaurar-procedimiento-manual) |
+| RF-19 Respaldar y restaurar *(opc.)* | ✅ | Respaldos de la base de datos: manual, programado y restaurar ([6.6](#66-respaldar-y-restaurar)) |
 | RF-20 Quién, cuándo y resultado *(opc.)* | ✅ | Auditoría |
 | RF-21 Requisitos de la app | ✅ | `admin-docente-alumno` |
 | RF-25 a RF-29 Salud, métricas y alertas | ✅ | [Sección 11](#11-salud-métricas-y-alertas) |

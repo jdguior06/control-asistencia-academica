@@ -14,7 +14,9 @@ export const infraStatusLabels = {
   none: 'Sin infraestructura',
 } satisfies Record<InfraStatus, string>
 
-const busyLabels = { create: 'Creando…', delete: 'Eliminando…', suspend: 'Suspendiendo…', resume: 'Reanudando…' } as const
+const busyLabels = {
+  create: 'Creando…', delete: 'Eliminando…', suspend: 'Suspendiendo…', resume: 'Reanudando…', backup: 'Respaldando…', restore: 'Restaurando…',
+} as const
 
 export function infraStatus(infrastructure?: TenantInfrastructure): InfraStatus {
   if (!infrastructure) return 'none'

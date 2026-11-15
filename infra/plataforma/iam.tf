@@ -80,6 +80,19 @@ data "aws_iam_policy_document" "plataforma" {
     resources = ["arn:aws:s3:::${var.bucket_estado}/*"]
   }
 
+  # Respaldos de las bases de los tenants (respaldos.tf).
+  statement {
+    sid       = "RespaldosListar"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.respaldos.arn]
+  }
+
+  statement {
+    sid       = "RespaldosLeerEscribir"
+    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    resources = ["${aws_s3_bucket.respaldos.arn}/*"]
+  }
+
   # AMI más reciente de Amazon Linux (parámetros públicos de AWS).
   statement {
     sid       = "ImagenesPublicas"

@@ -2,7 +2,9 @@ const express = require('express');
 const { timingSafeEqual } = require('node:crypto');
 const { createPool, migrate, transaction } = require('./db');
 const { InvitationError, allowedTenantOrigin, deliverInvitation, issueTenantInvitation, tenantIsActivated } = require('./invitations');
-const { ProvisioningError, createInstitution, infrastructureState, latestJob, regionCapacity, startJob } = require('./provisioning');
+const {
+  ProvisioningError, createInstitution, infrastructureState, latestJob, listBackups, regionCapacity, startJob,
+} = require('./provisioning');
 const { audit, listAudit } = require('./audit');
 const { monitoringSnapshot, tenantStatus } = require('./monitoring');
 const { authorized, notify, receiveGrafana } = require('./alerts');
@@ -29,7 +31,8 @@ const requestSelect = `
   LEFT JOIN platform_tenants t ON t.request_id = r.id
   LEFT JOIN LATERAL (
     SELECT action, status, finished_at FROM platform_jobs
-    WHERE tenant_id = t.id AND status IN ('succeeded', 'failed') ORDER BY created_at DESC LIMIT 1
+    WHERE tenant_id = t.id AND status IN ('succeeded', 'failed')
+      AND action IN ('create', 'delete', 'suspend', 'resume') ORDER BY created_at DESC LIMIT 1
   ) last ON true
   LEFT JOIN LATERAL (
     SELECT action FROM platform_jobs
@@ -485,6 +488,26 @@ function createApp(pool, platformOnly) {
   platform.post('/requests/:id/resume', async (request, response) => {
     requireRequestId(request.params.id);
     response.status(201).json({ job: await startJob(pool, request.params.id, 'resume', '', response.locals.user) });
+  });
+
+  // Respaldos (RF-19): lista, política del plan y último trabajo de respaldo o restauración.
+  platform.get('/requests/:id/backups', async (request, response) => {
+    requireRequestId(request.params.id);
+    const [list, job] = await Promise.all([listBackups(pool, request.params.id), latestJob(pool, request.params.id, 'backup')]);
+    response.json({ ...list, job });
+  });
+
+  platform.post('/requests/:id/backup', async (request, response) => {
+    requireRequestId(request.params.id);
+    response.status(201).json({ job: await startJob(pool, request.params.id, 'backup', '', response.locals.user) });
+  });
+
+  platform.post('/requests/:id/restore', async (request, response) => {
+    requireRequestId(request.params.id);
+    const confirmation = typeof request.body?.confirm === 'string' ? request.body.confirm.trim() : '';
+    response.status(201).json({
+      job: await startJob(pool, request.params.id, 'restore', confirmation, response.locals.user, { backupId: request.body?.backupId }),
+    });
   });
 
   platform.get('/regions', async (_request, response) => {

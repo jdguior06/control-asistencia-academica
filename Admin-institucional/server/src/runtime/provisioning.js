@@ -14,6 +14,10 @@ class ProvisioningError extends Error {
 // Dónde se puede crear hoy: las 3 regiones que permite la organización de la cuenta de AWS.
 // Azure se ve en el formulario, pero todavía no se aprovisiona.
 const PROVISIONABLE_REGIONS = ['us-east-2', 'us-east-1', 'us-west-2'];
+
+// Trabajos que cambian la infraestructura (los respaldos no cambian su estado).
+const INFRA_ACTIONS = "action IN ('create', 'delete', 'suspend', 'resume')";
+const BACKUP_ACTIONS = "action IN ('backup', 'restore')";
 // Instituciones con infraestructura por región, según las cuotas de la cuenta (vCPU y VPC).
 // Cada tenant usa 6 vCPU y 1 VPC. PLATFORM_TENANTS_PER_REGION: un número para todas las
 // regiones o "us-east-2=4,us-east-1=2,us-west-2=2". Por defecto, 2 en cada una.
@@ -34,7 +38,7 @@ const usedByRegion = `
   SELECT t.region, count(*)::int AS n
   FROM platform_tenants t
   JOIN LATERAL (
-    SELECT action, status FROM platform_jobs WHERE tenant_id = t.id ORDER BY created_at DESC LIMIT 1
+    SELECT action, status FROM platform_jobs WHERE tenant_id = t.id AND ${INFRA_ACTIONS} ORDER BY created_at DESC LIMIT 1
   ) j ON true
   WHERE NOT (j.action = 'delete' AND j.status = 'succeeded') AND t.id <> $1
   GROUP BY t.region
@@ -52,7 +56,7 @@ async function regionCapacity(pool) {
 const PROVISIONABLE_PLANS = ['basico', 'estandar', 'avanzado'];
 
 const jobSelect = `
-  SELECT j.id, j.action, j.status, j.steps, j.log, j.result, j.error, j.versions,
+  SELECT j.id, j.action, j.status, j.steps, j.log, j.result, j.error, j.versions, j.params, j.requested_by,
          j.created_at, j.started_at, j.finished_at
   FROM platform_jobs j
 `;
@@ -68,6 +72,8 @@ function serializeJob(row) {
     result: row.result ?? undefined,
     error: row.error ?? undefined,
     versions: row.versions && Object.keys(row.versions).length ? row.versions : undefined,
+    backupKey: row.params?.backupKey ?? undefined,
+    requestedBy: row.requested_by ?? undefined,
     createdAt: row.created_at,
     startedAt: row.started_at ?? undefined,
     finishedAt: row.finished_at ?? undefined,
@@ -104,7 +110,7 @@ async function tenantForRequest(client, requestId, lock = false) {
 async function lastFinishedJob(client, tenantId) {
   const { rows: [last] } = await client.query(`
     SELECT action, status FROM platform_jobs
-    WHERE tenant_id = $1 AND status IN ('succeeded', 'failed')
+    WHERE tenant_id = $1 AND status IN ('succeeded', 'failed') AND ${INFRA_ACTIONS}
     ORDER BY created_at DESC LIMIT 1
   `, [tenantId]);
   return last ?? null;
@@ -129,9 +135,11 @@ const descriptions = {
   delete: 'Se inició la eliminación de la infraestructura',
   suspend: 'Se inició la suspensión (apagar los servidores)',
   resume: 'Se inició la reanudación (encender los servidores)',
+  backup: 'Se inició un respaldo de la base de datos',
+  restore: 'Se inició la restauración de la base de datos',
 };
 
-async function enqueue(client, tenant, action, user) {
+async function enqueue(client, tenant, action, user, params = {}) {
   if (action === 'create') {
     if (tenant.slug.length > 30) {
       throw new ProvisioningError(422, 'El identificador debe tener como máximo 30 caracteres para crear su infraestructura.');
@@ -163,15 +171,16 @@ async function enqueue(client, tenant, action, user) {
   }
   try {
     const { rows: [job] } = await client.query(`
-      INSERT INTO platform_jobs (tenant_id, action) VALUES ($1, $2)
-      RETURNING id, action, status, steps, log, result, error, created_at, started_at, finished_at
-    `, [tenant.id, action]);
+      INSERT INTO platform_jobs (tenant_id, action, params, requested_by) VALUES ($1, $2, $3, $4)
+      RETURNING id, action, status, steps, log, result, error, versions, params, requested_by, created_at, started_at, finished_at
+    `, [tenant.id, action, JSON.stringify(params), user?.name ?? 'Operador']);
     await audit(client, {
       action: JOB_ACTIONS[action], result: 'started',
       actor: user?.name ?? 'Operador', actorRole: 'Operador',
       resource: tenant.institution_name ?? tenant.slug, reference: tenant.slug,
-      description: `${descriptions[action]} con ${tenant.engine}.`,
-      details: { jobId: job.id, engine: tenant.engine, region: tenant.region, plan: tenant.plan_id },
+      description: action === 'restore' ? `${descriptions[action]} (${params.backupKey}).`
+        : action === 'backup' ? `${descriptions[action]}.` : `${descriptions[action]} con ${tenant.engine}.`,
+      details: { jobId: job.id, engine: tenant.engine, region: tenant.region, plan: tenant.plan_id, ...(params.backupKey ? { backup: params.backupKey } : {}) },
     });
     return serializeJob(job);
   } catch (error) {
@@ -228,7 +237,7 @@ async function createInstitution(pool, body, user) {
   }
 }
 
-async function startJob(pool, requestId, action, confirmation, user) {
+async function startJob(pool, requestId, action, confirmation, user, options = {}) {
   return transaction(pool, async (client) => {
     const tenant = await tenantForRequest(client, requestId, true);
     if (!tenant) throw new ProvisioningError(409, 'Registra la institución antes de crear su infraestructura.');
@@ -251,16 +260,59 @@ async function startJob(pool, requestId, action, confirmation, user) {
     if (action === 'resume' && !(state === 'suspended' || (last?.action === 'suspend' && last.status === 'failed'))) {
       throw new ProvisioningError(409, 'La institución no está suspendida.');
     }
-    return enqueue(client, tenant, action, user);
+    if ((action === 'backup' || action === 'restore') && state !== 'ready') {
+      throw new ProvisioningError(409, 'Los respaldos necesitan la infraestructura lista y encendida (reanuda la institución si está suspendida).');
+    }
+    if (action === 'restore') {
+      const { rows: [backup] } = await client.query(`
+        SELECT object_key FROM platform_backups WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+      `, [String(options.backupId ?? ''), tenant.id]).catch(() => ({ rows: [] }));
+      if (!backup) throw new ProvisioningError(404, 'El respaldo no existe o ya se eliminó por la retención del plan.');
+      if (confirmation !== tenant.slug) {
+        throw new ProvisioningError(400, `Para confirmar, escribe el identificador «${tenant.slug}».`);
+      }
+      return enqueue(client, tenant, action, user, { backupKey: backup.object_key, backupId: String(options.backupId) });
+    }
+    return enqueue(client, tenant, action, user, action === 'backup' ? { kind: 'manual' } : {});
   });
 }
 
-async function latestJob(pool, requestId) {
+// Último trabajo de infraestructura (kind "infra") o de respaldos (kind "backup").
+async function latestJob(pool, requestId, kind = 'infra') {
   const { rows: [row] } = await pool.query(`
     ${jobSelect} JOIN platform_tenants t ON t.id = j.tenant_id
-    WHERE t.request_id = $1 ORDER BY j.created_at DESC LIMIT 1
+    WHERE t.request_id = $1 AND j.${kind === 'backup' ? BACKUP_ACTIONS : INFRA_ACTIONS}
+    ORDER BY j.created_at DESC LIMIT 1
   `, [requestId]);
   return serializeJob(row);
+}
+
+// Respaldos disponibles (RF-19) y la política del plan.
+const BACKUP_POLICY = {
+  basico: { label: 'Semanal', everyHours: 24 * 7, keep: 4 },
+  estandar: { label: 'Diario', everyHours: 24, keep: 7 },
+  avanzado: { label: 'Diario con retención ampliada', everyHours: 24, keep: 30 },
+};
+
+async function listBackups(pool, requestId) {
+  const { rows } = await pool.query(`
+    SELECT b.id, b.object_key, b.bytes, b.kind, b.created_at, r.plan_id
+    FROM platform_backups b
+    JOIN platform_tenants t ON t.id = b.tenant_id
+    JOIN platform_requests r ON r.id = t.request_id
+    WHERE t.request_id = $1 AND b.deleted_at IS NULL
+    ORDER BY b.created_at DESC
+  `, [requestId]);
+  const { rows: [plan] } = await pool.query(`
+    SELECT r.plan_id FROM platform_tenants t JOIN platform_requests r ON r.id = t.request_id WHERE t.request_id = $1
+  `, [requestId]);
+  const policy = BACKUP_POLICY[plan?.plan_id];
+  return {
+    policy: policy ? { label: policy.label, everyHours: policy.everyHours, keep: policy.keep } : null,
+    backups: rows.map((row) => ({
+      id: String(row.id), key: row.object_key, bytes: Number(row.bytes), kind: row.kind, createdAt: row.created_at,
+    })),
+  };
 }
 
 // Estado de todas las instituciones (para el monitoreo del portal).
@@ -273,7 +325,7 @@ async function tenantStates(pool) {
     JOIN platform_requests r ON r.id = t.request_id
     LEFT JOIN LATERAL (
       SELECT action, status FROM platform_jobs
-      WHERE tenant_id = t.id AND status IN ('succeeded', 'failed') ORDER BY created_at DESC LIMIT 1
+      WHERE tenant_id = t.id AND status IN ('succeeded', 'failed') AND ${INFRA_ACTIONS} ORDER BY created_at DESC LIMIT 1
     ) last ON true
     LEFT JOIN LATERAL (
       SELECT action FROM platform_jobs
@@ -298,5 +350,6 @@ async function tenantStates(pool) {
 
 module.exports = {
   PROVISIONABLE_PLANS, PROVISIONABLE_REGIONS, ProvisioningError,
-  createInstitution, infrastructureState, latestJob, regionCapacity, serializeJob, startJob, tenantStates,
+  BACKUP_POLICY, INFRA_ACTIONS, createInstitution, infrastructureState, latestJob, listBackups, regionCapacity,
+  serializeJob, startJob, tenantStates,
 };

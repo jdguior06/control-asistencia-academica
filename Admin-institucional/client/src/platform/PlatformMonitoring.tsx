@@ -26,14 +26,19 @@ function ago(iso: string, now: number) {
   return hours < 24 ? `hace ${hours} h ${minutes % 60} min` : `hace ${Math.floor(hours / 24)} d`
 }
 
-const emailLabels = { enviado: 'Correo enviado', error: 'El correo falló', 'sin-smtp': 'Sin correo (SMTP no configurado)', 'sin-destinatarios': 'Sin destinatarios' } as const
+const emailLabels = {
+  enviado: 'Correo enviado', error: 'El correo falló', 'sin-smtp': 'Sin correo (SMTP no configurado)', 'sin-destinatarios': 'Sin destinatarios',
+  omitido: 'Sin correo: durante un trabajo de la plataforma',
+} as const
 
 const roles: Record<string, string> = { backend: 'API', frontend: 'Frontend', base: 'PostgreSQL' }
 
 type Tone = 'ok' | 'warning' | 'error' | 'paused' | 'idle' | 'busy'
 type Health = { tone: Tone; text: string }
 
-const activeLabels = { create: 'Creando…', delete: 'Eliminando…', suspend: 'Suspendiendo…', resume: 'Reanudando…' } as const
+const activeLabels = {
+  create: 'Creando…', delete: 'Eliminando…', suspend: 'Suspendiendo…', resume: 'Reanudando…', backup: 'Respaldando…', restore: 'Restaurando…',
+} as const
 
 function health(tenant: MonitoredTenant, prometheusOk: boolean): Health {
   if (tenant.activeAction) return { tone: 'busy', text: activeLabels[tenant.activeAction] }
@@ -197,6 +202,7 @@ function EventsPanel({ events }: { events: MonitoringAlert[] }) {
         <span className="pm-timeline-dot" aria-hidden="true" />
         <div>
           <strong>{event.status === 'firing' ? 'Se disparó' : 'Se resolvió'}: {event.name}</strong>
+          {event.duringJob && <span className="pm-during-job">durante el despliegue</span>}
           <p>{affected(event)}{event.environment ? ` · ${optionLabel(environments, event.environment)}` : ''}</p>
           <p className="pm-event-time">Detectada {dateTimeFormat.format(new Date(event.startedAt))}
             {event.resolvedAt && <> · resuelta {dateTimeFormat.format(new Date(event.resolvedAt))}</>}</p>

@@ -1,39 +1,17 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import {
-  AlertTriangle, ArrowDownToLine, Check, CircleAlert, Clock3, Copy, Download, ExternalLink, LoaderCircle, Maximize2, Pause, Play,
+  ArrowDownToLine, Check, CircleAlert, Clock3, Copy, Download, ExternalLink, LoaderCircle, Maximize2, Pause, Play,
   Power, RotateCcw, ServerCog, Terminal, Trash2, X,
 } from 'lucide-react'
-import { ApiError, api, errorMessage, formatDate, webLink, type JobStep, type Plan, type ProvisioningJob, type TenantConfiguration } from './api'
+import { ApiError, api, errorMessage, formatDate, webLink, type Plan, type ProvisioningJob, type TenantConfiguration } from './api'
 import { engines, optionLabel, regions } from './tenant-options'
+import { jobLabel, stepIcons } from './job-labels'
 import './provisioning.css'
 
 // Infraestructura de una institución: la crea o la elimina el worker de la plataforma
 // (infra/scripts/aprovisionar.sh) y aquí se ven sus pasos y su registro en vivo.
 
 const POLL_MS = 3000
-
-const stepIcons = {
-  running: LoaderCircle,
-  ok: Check,
-  warning: AlertTriangle,
-  error: CircleAlert,
-} satisfies Record<JobStep['status'], typeof Check>
-
-const verbs = {
-  create: { queued: 'En cola para crear', running: 'Creando infraestructura…', succeeded: 'Infraestructura lista', failed: 'La creación falló' },
-  delete: { queued: 'En cola para eliminar', running: 'Eliminando infraestructura…', succeeded: 'Infraestructura eliminada', failed: 'La eliminación falló' },
-  suspend: { queued: 'En cola para suspender', running: 'Apagando servidores…', succeeded: 'Suspendida', failed: 'La suspensión falló' },
-  resume: { queued: 'En cola para reanudar', running: 'Encendiendo servidores…', succeeded: 'Infraestructura lista', failed: 'La reanudación falló' },
-} satisfies Record<ProvisioningJob['action'], Record<ProvisioningJob['status'], string>>
-
-function jobLabel(job: ProvisioningJob | null) {
-  if (!job) return { text: 'Sin infraestructura', tone: 'idle' }
-  const text = verbs[job.action][job.status]
-  if (job.status === 'queued' || job.status === 'running') return { text, tone: 'busy' }
-  if (job.status === 'failed') return { text, tone: 'error' }
-  if (job.action === 'delete') return { text, tone: 'deleted' }
-  return { text, tone: job.action === 'suspend' ? 'paused' : 'ok' }
-}
 
 // Estado de la infraestructura según el último trabajo (igual que el servidor: provisioning.js).
 type State = 'none' | 'ready' | 'suspended' | 'failed'
@@ -44,7 +22,8 @@ function infrastructureState(job: ProvisioningJob | null): State {
     case 'create': return ok ? 'ready' : 'failed'
     case 'delete': return ok ? 'none' : 'failed'
     case 'suspend': return ok ? 'suspended' : 'ready'
-    default: return ok ? 'ready' : 'suspended'
+    case 'resume': return ok ? 'ready' : 'suspended'
+    default: return 'ready' // respaldos: no cambian la infraestructura
   }
 }
 
@@ -74,7 +53,7 @@ function JobVersions({ versions }: { versions: Record<string, string> }) {
 }
 
 // El registro en grande: se actualiza en vivo mientras el trabajo corre.
-function LogDialog({ job, slug, active, onClose }: {
+export function LogDialog({ job, slug, active, onClose }: {
   job: ProvisioningJob
   slug: string
   active: boolean
@@ -178,7 +157,8 @@ function DeletionSummary({ tenant, plan }: { tenant: TenantConfiguration; plan?:
       <li><strong>Acceso</strong>: la ruta <code>{tenant.slug}.…nip.io</code> del gateway y su monitoreo en Prometheus y Grafana.</li>
       <li><strong>Estado del motor</strong>: {engineState[tenant.engine]?.(tenant.slug) ?? 'el estado del motor'}.</li>
     </ul>
-    <p>Se conservan: el registro de la institución en el portal, el historial de trabajos y la auditoría, y sus contraseñas archivadas en <code>generado/borrados/</code> del servidor de la plataforma.</p>
+    <p>Se conservan: el registro de la institución en el portal, el historial de trabajos y la auditoría, sus contraseñas archivadas en <code>generado/borrados/</code> del servidor de la plataforma
+      y sus <strong>respaldos</strong> en S3 (hasta 90 días): se pueden restaurar si se vuelve a crear la infraestructura.</p>
   </div>
 }
 

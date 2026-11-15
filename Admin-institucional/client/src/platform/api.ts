@@ -28,7 +28,7 @@ export interface InstallationStatus {
 export interface TenantInfrastructure {
   state: 'none' | 'ready' | 'suspended' | 'failed'
   deleted: boolean
-  activeAction?: 'create' | 'delete' | 'suspend' | 'resume'
+  activeAction?: 'create' | 'delete' | 'suspend' | 'resume' | 'backup' | 'restore'
   lastAction?: 'create' | 'delete' | 'suspend' | 'resume'
   lastStatus?: 'succeeded' | 'failed'
   lastFinishedAt?: string
@@ -74,11 +74,13 @@ export interface JobStep {
 // Un trabajo del worker: crear o eliminar la infraestructura de una institución.
 export interface ProvisioningJob {
   id: string
-  action: 'create' | 'delete' | 'suspend' | 'resume'
+  action: 'create' | 'delete' | 'suspend' | 'resume' | 'backup' | 'restore'
   status: JobStatus
   steps: JobStep[]
   log: string
   versions?: Record<string, string>
+  backupKey?: string
+  requestedBy?: string
   result?: { url?: string; motor?: string; previewUrl?: string; invitationStatus?: InvitationStatus; invitationError?: string }
   error?: string
   createdAt: string
@@ -107,7 +109,8 @@ export interface MonitoringAlert {
   status: 'firing' | 'resolved'
   startedAt: string
   resolvedAt?: string
-  email?: 'enviado' | 'error' | 'sin-smtp' | 'sin-destinatarios'
+  email?: 'enviado' | 'error' | 'sin-smtp' | 'sin-destinatarios' | 'omitido'
+  duringJob?: boolean
 }
 
 // Estado de una institución: sus trabajos (base de datos) y sus métricas (Prometheus).
@@ -150,7 +153,7 @@ export interface MonitoringSnapshot {
 }
 
 export type AuditAction = 'login' | 'logout' | 'request' | 'registration' | 'plan' | 'invitation' | 'activation'
-  | 'deployment' | 'deletion' | 'suspension' | 'resumption'
+  | 'deployment' | 'deletion' | 'suspension' | 'resumption' | 'backup' | 'restore'
 export type AuditResult = 'started' | 'completed' | 'pending' | 'failed'
 
 export interface AuditEvent {
@@ -172,6 +175,21 @@ export interface RegionCapacity {
   max: number
   used: number
   free: number
+}
+
+// Respaldos de la base de un tenant (RF-19).
+export interface TenantBackup {
+  id: string
+  key: string
+  bytes: number
+  kind: 'manual' | 'programado'
+  createdAt: string
+}
+
+export interface BackupsInfo {
+  policy: { label: string; everyHours: number; keep: number } | null
+  backups: TenantBackup[]
+  job: ProvisioningJob | null
 }
 
 export interface PlatformUser {

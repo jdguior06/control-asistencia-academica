@@ -7,6 +7,8 @@
 #   bash scripts/aprovisionar.sh crear  --slug utepsa --motor terraform --region us-east-2 --plan basico --numero 1
 #   bash scripts/aprovisionar.sh borrar --slug utepsa --motor terraform --region us-east-2 --plan basico --numero 1
 #   bash scripts/aprovisionar.sh suspender|reanudar --slug utepsa --motor terraform --region us-east-2 --plan basico --numero 1
+#   bash scripts/aprovisionar.sh respaldar --slug utepsa --motor terraform --region us-east-2 --plan basico --numero 1
+#   bash scripts/aprovisionar.sh restaurar --slug utepsa ... --respaldo tenants/utepsa/20261115-030000.dump
 #
 # Pasos al crear:
 #   1 Validar   2 Escaneo de seguridad del código   3 Plan y políticas (Conftest, Infracost)
@@ -32,14 +34,14 @@ titulo() { echo; echo "──── $* ────"; }
 trap 'echo "::error::$PASO::Falló: ${BASH_COMMAND:0:160}"' ERR
 
 # ------------------------------------------------------------------ entradas
-uso() { echo "Uso: $0 crear|borrar|suspender|reanudar --slug S --motor M --region R --plan P [--entorno E] --numero N"; exit 2; }
+uso() { echo "Uso: $0 crear|borrar|suspender|reanudar|respaldar|restaurar --slug S --motor M --region R --plan P [--entorno E] --numero N [--respaldo CLAVE]"; exit 2; }
 accion=${1:-}; [[ $# -gt 0 ]] && shift
-slug=""; motor=""; region="us-east-2"; plan="basico"; entorno="production"; numero=0
+slug=""; motor=""; region="us-east-2"; plan="basico"; entorno="production"; numero=0; respaldo=""
 while [[ $# -gt 0 ]]; do
   [[ $# -ge 2 ]] || uso
   case $1 in
     --slug) slug=$2 ;; --motor) motor=$2 ;; --region) region=$2 ;;
-    --plan) plan=$2 ;; --entorno) entorno=$2 ;; --numero) numero=$2 ;;
+    --plan) plan=$2 ;; --entorno) entorno=$2 ;; --numero) numero=$2 ;; --respaldo) respaldo=$2 ;;
     *) uso ;;
   esac
   shift 2
@@ -60,7 +62,7 @@ print(d if not isinstance(d,(list,dict)) else json.dumps(d))' "$1" "$2"; }
 
 # ==================================================================== 1. validar
 paso 1 "Validar datos"
-[[ $accion =~ ^(crear|borrar|suspender|reanudar)$ ]] || fallar "acción '$accion' (crear, borrar, suspender o reanudar)"
+[[ $accion =~ ^(crear|borrar|suspender|reanudar|respaldar|restaurar)$ ]] || fallar "acción '$accion' (crear, borrar, suspender, reanudar, respaldar o restaurar)"
 [[ $slug =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && ${#slug} -ge 3 && ${#slug} -le 30 ]] || fallar "slug '$slug' no válido (3 a 30: minúsculas, números y guiones)"
 [[ $motor =~ ^(terraform|opentofu|pulumi|cloudformation)$ ]] || fallar "motor '$motor' no válido"
 [[ $region =~ ^(us-east-1|us-east-2|us-west-2)$ ]] || fallar "región '$region' no disponible (us-east-1, us-east-2, us-west-2)"
@@ -73,6 +75,7 @@ DOMINIO=$(json "$PLATAFORMA" dominio)
 REGION_PLAT=$(json "$PLATAFORMA" region)
 
 necesarias=(python3 aws)
+[[ $accion =~ ^(respaldar|restaurar)$ ]] && necesarias+=(ansible)
 case $motor in
   terraform|opentofu) necesarias+=("$TF") ;;
   pulumi) necesarias+=(pulumi node npm) ;;
@@ -190,6 +193,96 @@ if [[ $accion == reanudar ]]; then
   [[ $codigo == 200 ]] || fallar "$url/api/health respondió $codigo después de 5 minutos"
   ok "$url responde"
   python3 -c 'import json,sys; print("::resultado::"+json.dumps({"url":sys.argv[1]}))' "$url"
+  exit 0
+fi
+
+# ==================================================================== respaldar / restaurar (RF-19)
+# El worker entra por SSH a la base del tenant (como en tenant.yml), hace pg_dump y guarda el
+# archivo en el bucket de respaldos de la plataforma: s3://<bucket>/tenants/<slug>/<fecha>.dump
+if [[ $accion == respaldar || $accion == restaurar ]]; then
+  DB=asistencia
+  BUCKET=$(json "$PLATAFORMA" respaldos 2>/dev/null || true)
+  [[ -n $BUCKET ]] || fallar "falta el bucket de respaldos (terraform apply en infra/plataforma y luego plataforma.yml)"
+  [[ -f $INFRA/generado/tenants/$slug.json ]] || fallar "el tenant no tiene infraestructura creada"
+  encendidos=$(servidores_en running | wc -w)
+  (( encendidos == 3 )) || fallar "los servidores no están encendidos ($encendidos de 3): reanuda el tenant primero"
+  cd "$INFRA"
+  python3 scripts/inventario.py "$slug" --en-plataforma >/dev/null
+  cd "$INFRA/ansible"
+  inv=(-i "inventarios/$slug.ini" -o)
+  mkdir -p "$GEN/respaldos"
+
+  if [[ $accion == respaldar ]]; then
+    paso 2 "Copiar la base de datos (pg_dump)"
+    fecha=$(date -u +%Y%m%d-%H%M%S)
+    remoto="/tmp/respaldo-$slug.dump"
+    archivo="$GEN/respaldos/$fecha.dump"
+    ansible "$slug-base" "${inv[@]}" -b --become-user postgres -m shell -a "pg_dump -Fc -d $DB -f $remoto"
+    ansible "$slug-base" "${inv[@]}" -b -m fetch -a "src=$remoto dest=$archivo flat=yes" >/dev/null
+    ansible "$slug-base" "${inv[@]}" -b -m file -a "path=$remoto state=absent" >/dev/null
+    bytes=$(stat -c %s "$archivo")
+    ok "base $DB · $(numfmt --to=iec "$bytes")B"
+
+    paso 3 "Guardar en S3 y aplicar la retención del plan"
+    clave="tenants/$slug/$fecha.dump"
+    aws s3 cp "$archivo" "s3://$BUCKET/$clave" --only-show-errors
+    rm -f "$archivo"
+    case $plan in basico) conservar=4 ;; estandar) conservar=7 ;; *) conservar=30 ;; esac
+    todas=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "tenants/$slug/" --query 'Contents[].Key' --output text | tr '\t' '\n' | grep -E '\.dump$' | sort || true)
+    total=$(grep -c . <<<"$todas" || true)
+    eliminados=()
+    if (( total > conservar )); then
+      while read -r vieja; do
+        aws s3 rm "s3://$BUCKET/$vieja" --only-show-errors
+        eliminados+=("$vieja")
+      done < <(head -n $(( total - conservar )) <<<"$todas")
+    fi
+    echo "Respaldos de $slug en S3: $(( total - ${#eliminados[@]} )) (plan $plan: se conservan los últimos $conservar)"
+    ok "s3://$BUCKET/$clave${eliminados:+ · ${#eliminados[@]} antiguo(s) eliminado(s)}"
+    python3 -c 'import json,sys; print("::resultado::"+json.dumps({"respaldo":{"clave":sys.argv[1],"bytes":int(sys.argv[2]),"bucket":sys.argv[3]},"eliminados":sys.argv[4:]}))' \
+      "$clave" "$bytes" "$BUCKET" "${eliminados[@]}"
+    exit 0
+  fi
+
+  # Restaurar: la copia se carga en una base nueva; recién si termina bien se detiene la API
+  # un momento y se intercambian los nombres. Si algo falla antes, la base actual no se toca.
+  [[ $respaldo =~ ^tenants/[a-z0-9-]+/[0-9]{8}-[0-9]{6}\.dump$ ]] || fallar "respaldo '$respaldo' no válido"
+  paso 2 "Descargar el respaldo"
+  archivo="$GEN/respaldos/restaurar.dump"
+  aws s3 cp "s3://$BUCKET/$respaldo" "$archivo" --only-show-errors
+  ok "$respaldo · $(numfmt --to=iec "$(stat -c %s "$archivo")")B"
+
+  paso 3 "Cargar la copia en una base nueva"
+  ansible "$slug-base" "${inv[@]}" -b -m copy -a "src=$archivo dest=/tmp/restaurar.dump mode=0644" >/dev/null
+  rm -f "$archivo"
+  ansible "$slug-base" "${inv[@]}" -b --become-user postgres -m shell -a \
+    "dropdb --if-exists ${DB}_restaurando && createdb -O $DB ${DB}_restaurando && pg_restore --no-owner --role=$DB --exit-on-error -d ${DB}_restaurando /tmp/restaurar.dump"
+  ok "la copia se cargó en ${DB}_restaurando (la base actual sigue intacta)"
+
+  paso 4 "Reemplazar la base (la API se detiene unos segundos)"
+  ansible "$slug-backend" "${inv[@]}" -b -m systemd -a "name=asistencia-api state=stopped" >/dev/null
+  cambio=0
+  ansible "$slug-base" "${inv[@]}" -b --become-user postgres -m shell -a \
+    "psql -X -v ON_ERROR_STOP=1 -c 'ALTER DATABASE $DB ALLOW_CONNECTIONS false' -c \"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$DB' AND pid <> pg_backend_pid()\" && dropdb --if-exists ${DB}_anterior && psql -X -v ON_ERROR_STOP=1 -c 'ALTER DATABASE $DB RENAME TO ${DB}_anterior' -c 'ALTER DATABASE ${DB}_restaurando RENAME TO $DB'" \
+    || cambio=$?
+  ansible "$slug-backend" "${inv[@]}" -b -m systemd -a "name=asistencia-api state=started" >/dev/null
+  ansible "$slug-base" "${inv[@]}" -b -m file -a "path=/tmp/restaurar.dump state=absent" >/dev/null
+  (( cambio == 0 )) || fallar "no se pudo reemplazar la base (la API volvió a arrancar con la base anterior)"
+  ok "base restaurada; la anterior quedó como ${DB}_anterior hasta verificar"
+
+  paso 5 "Verificar"
+  url="http://$slug.$DOMINIO"
+  codigo=000
+  for intento in $(seq 1 18); do
+    codigo=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -H "Host: $slug.$DOMINIO" http://127.0.0.1/api/health || true)
+    [[ $codigo == 200 ]] && break
+    echo "Intento $intento: $url/api/health → $codigo"
+    sleep 5
+  done
+  [[ $codigo == 200 ]] || fallar "$url/api/health respondió $codigo: la base anterior sigue guardada como ${DB}_anterior"
+  ansible "$slug-base" "${inv[@]}" -b --become-user postgres -m shell -a "dropdb --if-exists ${DB}_anterior" >/dev/null
+  ok "$url responde con los datos del respaldo"
+  python3 -c 'import json,sys; print("::resultado::"+json.dumps({"restaurado":sys.argv[1],"url":sys.argv[2]}))' "$respaldo" "$url"
   exit 0
 fi
 

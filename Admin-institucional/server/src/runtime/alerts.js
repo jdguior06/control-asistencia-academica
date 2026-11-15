@@ -98,6 +98,24 @@ async function notify(pool, changes) {
   const withAdmin = process.env.PLATFORM_ALERT_NOTIFY_TENANT_ADMIN !== 'false';
 
   for (const change of changes) {
+    // Durante un trabajo de la plataforma (crear, reanudar, restaurar...) o en los 10 minutos
+    // siguientes, las alertas del tenant son esperadas: se guardan marcadas y sin correo.
+    if (change.tenant) {
+      const { rows: [busy] } = await pool.query(`
+        SELECT 1 FROM platform_jobs j JOIN platform_tenants t ON t.id = j.tenant_id
+        WHERE t.slug = $1 AND (j.status IN ('queued', 'running') OR j.finished_at > now() - interval '10 minutes')
+        LIMIT 1
+      `, [change.tenant]);
+      // Una "resuelta" de una alerta que ya fue marcada tampoco necesita correo.
+      const { rows: [marked] } = change.firing ? { rows: [] } : await pool.query(
+        'SELECT during_job FROM platform_alerts WHERE id = $1', [change.id],
+      );
+      if (busy || marked?.during_job) {
+        await pool.query("UPDATE platform_alerts SET during_job = true, email_status = 'omitido' WHERE id = $1", [change.id])
+          .catch(() => {});
+        continue;
+      }
+    }
     let status = 'sin-smtp';
     const recipients = [...operators];
     let institution = change.tenant;
@@ -147,7 +165,7 @@ async function notify(pool, changes) {
 async function alertsForMonitoring(pool) {
   const { rows } = await pool.query(`
     SELECT a.id, a.rule, a.tenant, a.server, a.environment, a.severity, a.summary, a.status,
-           a.started_at, a.resolved_at, a.email_status, r.institution_name
+           a.started_at, a.resolved_at, a.email_status, a.during_job, r.institution_name
     FROM platform_alerts a
     LEFT JOIN platform_tenants t ON t.slug = a.tenant
     LEFT JOIN platform_requests r ON r.id = t.request_id
@@ -169,6 +187,7 @@ async function alertsForMonitoring(pool) {
     startedAt: row.started_at,
     resolvedAt: row.resolved_at ?? undefined,
     email: row.email_status ?? undefined,
+    duringJob: row.during_job || undefined,
   }));
 }
 

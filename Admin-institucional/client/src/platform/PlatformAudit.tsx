@@ -18,6 +18,8 @@ const actions = {
   deletion: 'Eliminación de infraestructura',
   suspension: 'Suspensión',
   resumption: 'Reanudación',
+  backup: 'Respaldo',
+  restore: 'Restauración',
 } satisfies Record<AuditAction, string>
 
 const results = {
@@ -32,6 +34,7 @@ const detailLabels: Record<string, string> = {
   duration: 'Duración', ip: 'Dirección IP', email: 'Correo', status: 'Estado',
   commit: 'Código (rama y commit)', app: 'Aplicación', template: 'Plantilla', engineVersion: 'Motor',
   ansible: 'Ansible', image: 'Imagen (Packer)', scanners: 'Escáneres',
+  backup: 'Respaldo', size: 'Tamaño', requestedBy: 'Solicitado por',
 }
 
 const POLL_MS = 20000

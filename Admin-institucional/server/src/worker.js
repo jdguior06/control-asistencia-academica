@@ -16,14 +16,19 @@ const { databaseUrl } = require('./config');
 const { createPool } = require('./runtime/db');
 const { inviteTenant } = require('./runtime/server');
 const { JOB_ACTIONS, audit } = require('./runtime/audit');
+const { BACKUP_POLICY } = require('./runtime/provisioning');
 
 // Acción del trabajo -> argumento de aprovisionar.sh
-const SCRIPT_ACTIONS = { create: 'crear', delete: 'borrar', suspend: 'suspender', resume: 'reanudar' };
+const SCRIPT_ACTIONS = {
+  create: 'crear', delete: 'borrar', suspend: 'suspender', resume: 'reanudar', backup: 'respaldar', restore: 'restaurar',
+};
 const DONE = {
   create: 'La infraestructura quedó lista',
   delete: 'La infraestructura se eliminó',
   suspend: 'Los servidores quedaron apagados',
   resume: 'Los servidores volvieron a encenderse',
+  backup: 'Se guardó un respaldo de la base de datos',
+  restore: 'La base de datos se restauró desde un respaldo',
 };
 
 const INFRA = path.resolve(process.env.PLATFORM_INFRA_DIR ?? path.join(__dirname, '..', '..', '..', 'infra'));
@@ -45,7 +50,7 @@ async function claim(pool) {
       SELECT id FROM platform_jobs WHERE status = 'queued'
       ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
     )
-    RETURNING id, action, tenant_id
+    RETURNING id, action, tenant_id, params, requested_by
   `);
   if (!job) return null;
   const { rows: [tenant] } = await pool.query(`
@@ -64,6 +69,7 @@ function runScript(pool, job) {
     '--plan', tenant.plan_id, '--entorno', tenant.environment,
     '--numero', String(tenant.network_number ?? 0),
   ];
+  if (job.action === 'restore') args.push('--respaldo', String(job.params?.backupKey ?? ''));
 
   const steps = [];
   const versions = {};
@@ -183,6 +189,17 @@ async function process_(pool, job) {
       await appendLog(pool, job.id, [`No se pudo preparar la invitación: ${cause.message}`]);
     }
   }
+  // Respaldo nuevo y los que la retención del plan eliminó de S3.
+  if (code === 0 && job.action === 'backup' && result?.respaldo?.clave) {
+    await pool.query(`
+      INSERT INTO platform_backups (tenant_id, job_id, object_key, bucket, bytes, kind)
+      VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (object_key) DO NOTHING
+    `, [job.tenant.id, job.id, result.respaldo.clave, result.respaldo.bucket, result.respaldo.bytes,
+      job.params?.kind === 'manual' ? 'manual' : 'programado']);
+    if (Array.isArray(result.eliminados) && result.eliminados.length) {
+      await pool.query('UPDATE platform_backups SET deleted_at = now() WHERE object_key = ANY($1) AND deleted_at IS NULL', [result.eliminados]);
+    }
+  }
   if (code === 0 && job.action === 'delete') {
     await pool.query(`
       UPDATE platform_tenants
@@ -205,10 +222,15 @@ async function process_(pool, job) {
     action: JOB_ACTIONS[job.action], result: code === 0 ? 'completed' : 'failed',
     actor: 'Worker', actorRole: 'Aprovisionamiento',
     resource: job.tenant.institution_name, reference: job.tenant.slug,
-    description: code === 0 ? `${DONE[job.action]} (${job.tenant.engine}).` : `Falló: ${error}`,
+    description: code === 0
+      ? `${DONE[job.action]}${['backup', 'restore'].includes(job.action) ? '' : ` (${job.tenant.engine})`}.`
+      : `Falló: ${error}`,
     details: {
       jobId: job.id, engine: job.tenant.engine, region: job.tenant.region, plan: job.tenant.plan_id, duration,
       ...versionSummary(versions),
+      ...(job.requested_by ? { requestedBy: job.requested_by } : {}),
+      ...(job.params?.backupKey ? { backup: job.params.backupKey } : {}),
+      ...(result?.respaldo ? { backup: result.respaldo.clave, size: `${Math.max(1, Math.round(result.respaldo.bytes / 1024))} KB` } : {}),
       steps: steps.map((step) => `${step.number}. ${step.title}: ${step.status}${step.summary ? ` · ${step.summary}` : ''}`),
     },
   });
@@ -237,6 +259,57 @@ async function backfillStatusKeys(pool) {
   }
 }
 
+// Respaldos programados (RF-19): según el plan (semanal o diario). El primero, una hora
+// después de que la infraestructura quedó lista. Solo instituciones encendidas y sin otro
+// trabajo; si un respaldo falla, se espera una hora antes de volver a intentarlo.
+const SCHEDULE_MS = 10 * 60 * 1000;
+let lastSchedule = 0;
+
+async function scheduleBackups(pool) {
+  if (Date.now() - lastSchedule < SCHEDULE_MS) return;
+  lastSchedule = Date.now();
+  const { rows } = await pool.query(`
+    SELECT t.id, t.slug, t.region, t.engine, r.plan_id, r.institution_name, last.finished_at AS ready_at,
+           (SELECT max(created_at) FROM platform_backups WHERE tenant_id = t.id) AS last_backup,
+           (SELECT max(created_at) FROM platform_jobs WHERE tenant_id = t.id AND action = 'backup') AS last_attempt
+    FROM platform_tenants t
+    JOIN platform_requests r ON r.id = t.request_id
+    JOIN LATERAL (
+      SELECT action, status, finished_at FROM platform_jobs
+      WHERE tenant_id = t.id AND status IN ('succeeded', 'failed') AND action IN ('create', 'delete', 'suspend', 'resume')
+      ORDER BY created_at DESC LIMIT 1
+    ) last ON true
+    WHERE last.status = 'succeeded' AND last.action IN ('create', 'resume')
+      AND NOT EXISTS (SELECT 1 FROM platform_jobs WHERE tenant_id = t.id AND status IN ('queued', 'running'))
+  `);
+  const now = Date.now();
+  const hour = 60 * 60 * 1000;
+  for (const row of rows) {
+    const policy = BACKUP_POLICY[row.plan_id];
+    if (!policy) continue;
+    const due = row.last_backup
+      ? now - new Date(row.last_backup).getTime() >= policy.everyHours * hour
+      : now - new Date(row.ready_at).getTime() >= hour;
+    const retryOk = !row.last_attempt || now - new Date(row.last_attempt).getTime() >= hour;
+    if (!due || !retryOk) continue;
+    try {
+      const { rows: [job] } = await pool.query(`
+        INSERT INTO platform_jobs (tenant_id, action, params, requested_by)
+        VALUES ($1, 'backup', '{"kind":"programado"}', 'Respaldo programado') RETURNING id
+      `, [row.id]);
+      await audit(pool, {
+        action: 'backup', result: 'started', actor: 'Respaldo programado', actorRole: 'Sistema',
+        resource: row.institution_name, reference: row.slug,
+        description: `Se inició el respaldo programado (${policy.label.toLocaleLowerCase('es')}).`,
+        details: { jobId: job.id, plan: row.plan_id, region: row.region },
+      });
+      console.log(`Respaldo programado de ${row.slug}`);
+    } catch (error) {
+      if (error.code !== '23505') throw error; // ya tenía un trabajo en curso
+    }
+  }
+}
+
 async function main() {
   const pool = createPool(databaseUrl());
   pool.on('error', (error) => console.error('Conexión PostgreSQL cerrada.', error.code ?? error.name));
@@ -254,7 +327,10 @@ async function main() {
     try {
       const job = await claim(pool);
       if (job) await process_(pool, job);
-      else await sleep(POLL_MS);
+      else {
+        await scheduleBackups(pool);
+        await sleep(POLL_MS);
+      }
     } catch (error) {
       console.error('Error del worker.', error.code ?? error.message);
       await sleep(POLL_MS);

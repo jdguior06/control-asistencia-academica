@@ -434,8 +434,14 @@ ansible <slug>-backend -i inventarios/<slug>.ini -b -m systemd -a "name=asistenc
 ansible <slug>-backend -i inventarios/<slug>.ini -b -m systemd -a "name=asistencia-api state=started"
 ```
 
+## Respaldos (RF-19)
+
+Instituciones → el tenant → **Respaldos de la base de datos**: respaldar ahora, lista de
+respaldos y restaurar. Programados según el plan (semanal o diario). Se guardan en el
+bucket `asistencia-respaldos-<cuenta>` (lo crea `infra/plataforma/respaldos.tf`). Detalle
+en DOCUMENTACION.md, sección 6.6.
+
 ## Pendiente (requisitos opcionales)
 
-- **RF-19** respaldar y restaurar desde el portal (hoy, procedimiento manual en DOCUMENTACION.md 6.6).
 - **RF-06** cambiar el plan de un tenant · **RF-05** límite de estudiantes en la app.
 - **RF-15** actualizar desde el portal (hoy, manual: DOCUMENTACION.md 6.2).

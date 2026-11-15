@@ -19,6 +19,7 @@ locals {
     usuario_ssh  = "ec2-user"
     claves_ssh   = local.claves_ssh
     bucket       = var.bucket_estado
+    respaldos    = aws_s3_bucket.respaldos.bucket
     regiones     = var.regiones_tenant
     ip_privadas  = { for nombre, s in aws_instance.servidor : nombre => s.private_ip }
     ip_monitoreo = aws_instance.servidor["monitoreo"].public_ip
