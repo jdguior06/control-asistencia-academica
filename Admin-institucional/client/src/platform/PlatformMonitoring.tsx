@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Activity, BellRing, CircleAlert, CircleCheck, CirclePause, Clock3, Cpu, Database, ExternalLink, Gauge,
-  HardDrive, LoaderCircle, MemoryStick, RefreshCw, Server, ServerOff,
+  HardDrive, History, LoaderCircle, Mail, MemoryStick, RefreshCw, Server, ServerOff,
 } from 'lucide-react'
 import {
   ApiError, api, errorMessage, webLink,
-  type MonitoredServer, type MonitoredTenant, type MonitoringSnapshot,
+  type MonitoredServer, type MonitoredTenant, type MonitoringAlert, type MonitoringSnapshot,
 } from './api'
-import { engines, optionLabel, regions } from './tenant-options'
+import { engines, environments, optionLabel, regions } from './tenant-options'
 import './platform-monitoring.css'
 
 // Monitoreo con datos reales: el portal consulta a Prometheus (vm-monitoreo) las mismas
@@ -16,6 +16,17 @@ import './platform-monitoring.css'
 const POLL_MS = 15000
 
 const timeFormat = new Intl.DateTimeFormat('es-BO', { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
+const dateTimeFormat = new Intl.DateTimeFormat('es-BO', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+
+function ago(iso: string, now: number) {
+  const minutes = Math.max(0, Math.round((now - new Date(iso).getTime()) / 60000))
+  if (minutes < 1) return 'hace menos de 1 min'
+  if (minutes < 60) return `hace ${minutes} min`
+  const hours = Math.floor(minutes / 60)
+  return hours < 24 ? `hace ${hours} h ${minutes % 60} min` : `hace ${Math.floor(hours / 24)} d`
+}
+
+const emailLabels = { enviado: 'Correo enviado', error: 'El correo falló', 'sin-smtp': 'Sin correo (SMTP no configurado)', 'sin-destinatarios': 'Sin destinatarios' } as const
 
 const roles: Record<string, string> = { backend: 'API', frontend: 'Frontend', base: 'PostgreSQL' }
 
@@ -26,7 +37,7 @@ const activeLabels = { create: 'Creando…', delete: 'Eliminando…', suspend: '
 
 function health(tenant: MonitoredTenant, prometheusOk: boolean): Health {
   if (tenant.activeAction) return { tone: 'busy', text: activeLabels[tenant.activeAction] }
-  if (tenant.state === 'none') return { tone: 'idle', text: 'Sin infraestructura' }
+  if (tenant.state === 'none') return { tone: 'idle', text: tenant.deleted ? 'Infraestructura eliminada' : 'Sin infraestructura' }
   if (tenant.state === 'suspended') return { tone: 'paused', text: 'Suspendida' }
   if (tenant.state === 'failed') return { tone: 'error', text: 'Último trabajo falló' }
   if (!prometheusOk) return { tone: 'idle', text: 'Sin métricas' }
@@ -70,7 +81,7 @@ function ServerChips({ servers }: { servers: MonitoredServer[] }) {
 function idleNote(tenant: MonitoredTenant, prometheusOk: boolean) {
   if (tenant.activeAction) return 'Hay un trabajo en curso; las métricas aparecen cuando termine.'
   if (tenant.state === 'suspended') return 'Los servidores están apagados: no generan métricas ni consumen horas de cómputo.'
-  if (tenant.state === 'none') return 'Todavía no tiene servidores. Créalos desde Solicitudes.'
+  if (tenant.state === 'none') return tenant.deleted ? 'Su infraestructura se eliminó.' : 'Todavía no tiene servidores. Créalos desde Instituciones.'
   if (tenant.state === 'failed') return 'Revisa el registro del último trabajo en Solicitudes.'
   if (prometheusOk) return 'Prometheus todavía no recibe datos de sus agentes (pueden tardar 1–2 minutos).'
   return 'Las métricas no están disponibles en este momento.'
@@ -107,6 +118,7 @@ function TenantCard({ tenant, snapshot }: { tenant: MonitoredTenant; snapshot: M
         <div><dt>Peticiones</dt><dd>{tenant.requests === undefined ? '—' : `${tenant.requests}/s`}</dd></div>
         <div><dt>Conexiones BD</dt><dd>{tenant.connections ?? '—'}</dd></div>
         <div><dt>Agentes</dt><dd className={agentsMissing ? 'pm-bad' : undefined}>{tenant.agentsUp ?? 0} de {tenant.agentsTotal ?? 0}</dd></div>
+        <div><dt>5xx (15 min)</dt><dd className={tenant.errors ? 'pm-bad' : undefined}>{tenant.errors ?? '—'}</dd></div>
         <div><dt>Alertas</dt><dd className={tenant.alerts ? 'pm-warn' : undefined}>{tenant.alerts ?? 0}</dd></div>
       </dl>
       <ServerChips servers={tenant.servers} />
@@ -152,21 +164,45 @@ function PlatformPanel({ snapshot }: { snapshot: MonitoringSnapshot }) {
   </section>
 }
 
-function AlertsPanel({ snapshot }: { snapshot: MonitoringSnapshot }) {
-  const names = Object.fromEntries(snapshot.tenants.map(tenant => [tenant.slug, tenant.institutionName]))
+function affected(alert: MonitoringAlert) {
+  return `${alert.institutionName ?? alert.tenant ?? 'Plataforma'}${alert.server ? ` · ${alert.server}` : ''}`
+}
+
+// RF-29: alertas activas con su tenant afectado y hora de detección.
+function AlertsPanel({ alerts, now }: { alerts: MonitoringAlert[]; now: number }) {
   return <section className="pm-panel" aria-labelledby="pm-alerts-title">
     <div className="pm-panel-heading"><span className="pm-section-icon"><BellRing size={19} aria-hidden="true" /></span><h2 id="pm-alerts-title">Alertas activas</h2></div>
     <ul className="pm-event-list">
-      {snapshot.alerts.length === 0 ? <li><CircleCheck size={17} aria-hidden="true" /><div>
+      {alerts.length === 0 ? <li><CircleCheck size={17} aria-hidden="true" /><div>
         <strong>Sin alertas activas</strong>
-        <p>{snapshot.prometheus === 'ok' ? 'Ninguna regla de alerta está disparada.' : 'No se pudo consultar Prometheus.'}</p>
-      </div></li> : snapshot.alerts.map((alert, index) => <li key={`${alert.name}-${alert.server ?? ''}-${index}`} className={alert.severity === 'critical' ? 'pm-event-error' : 'pm-event-warning'}>
+        <p>Grafana avisa aquí cuando una regla se dispara.</p>
+      </div></li> : alerts.map(alert => <li key={alert.id} className={alert.severity === 'critica' ? 'pm-event-error' : 'pm-event-warning'}>
         <CircleAlert size={17} aria-hidden="true" /><div>
-          <div className="pm-event-title"><strong>{alert.name}</strong>{alert.severity && <small>{alert.severity}</small>}</div>
-          <p>{alert.tenant ? names[alert.tenant] ?? alert.tenant : 'Plataforma'}{alert.server ? ` · ${alert.server}` : ''}</p>
+          <div className="pm-event-title"><strong>{alert.name}</strong>{alert.severity && <small>{alert.severity === 'critica' ? 'crítica' : alert.severity}</small>}</div>
+          <p>{affected(alert)}</p>
+          <p className="pm-event-time"><Clock3 size={11} aria-hidden="true" /> Detectada {dateTimeFormat.format(new Date(alert.startedAt))} · {ago(alert.startedAt, now)}
+            {alert.email && <span title={emailLabels[alert.email]}> · <Mail size={11} aria-hidden="true" /> {emailLabels[alert.email]}</span>}</p>
         </div>
       </li>)}
     </ul>
+  </section>
+}
+
+// RF-29: eventos recientes (alertas disparadas y resueltas en las últimas 24 horas).
+function EventsPanel({ events }: { events: MonitoringAlert[] }) {
+  return <section className="pm-panel" aria-labelledby="pm-events-title">
+    <div className="pm-panel-heading"><span className="pm-section-icon"><History size={19} aria-hidden="true" /></span><h2 id="pm-events-title">Eventos recientes (24 h)</h2></div>
+    {events.length === 0 ? <p className="pm-empty-line">Sin alertas en las últimas 24 horas.</p> : <ol className="pm-timeline">
+      {events.map(event => <li key={event.id} className={event.status === 'firing' ? 'pm-timeline-firing' : 'pm-timeline-resolved'}>
+        <span className="pm-timeline-dot" aria-hidden="true" />
+        <div>
+          <strong>{event.status === 'firing' ? 'Se disparó' : 'Se resolvió'}: {event.name}</strong>
+          <p>{affected(event)}{event.environment ? ` · ${optionLabel(environments, event.environment)}` : ''}</p>
+          <p className="pm-event-time">Detectada {dateTimeFormat.format(new Date(event.startedAt))}
+            {event.resolvedAt && <> · resuelta {dateTimeFormat.format(new Date(event.resolvedAt))}</>}</p>
+        </div>
+      </li>)}
+    </ol>}
   </section>
 }
 
@@ -180,6 +216,7 @@ export default function PlatformMonitoring({ onSessionExpired }: { onSessionExpi
   const [snapshot, setSnapshot] = useState<MonitoringSnapshot>()
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [environment, setEnvironment] = useState('all')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -205,6 +242,15 @@ export default function PlatformMonitoring({ onSessionExpired }: { onSessionExpi
 
   const grafana = webLink(snapshot?.grafanaUrl)
   const source = snapshot ? sources[snapshot.prometheus] : undefined
+  // RF-27: las métricas también por entorno.
+  const view = useMemo(() => {
+    if (!snapshot || environment === 'all') return snapshot
+    const tenants = snapshot.tenants.filter(tenant => tenant.environment === environment)
+    const slugs = new Set(tenants.map(tenant => tenant.slug))
+    const inView = (alert: MonitoringAlert) => !alert.tenant || slugs.has(alert.tenant)
+    return { ...snapshot, tenants, alerts: snapshot.alerts.filter(inView), events: snapshot.events.filter(inView) }
+  }, [snapshot, environment])
+  const now = snapshot ? new Date(snapshot.updatedAt).getTime() : 0
 
   return <div className="pm-dashboard">
     <div className="pm-toolbar">
@@ -216,6 +262,10 @@ export default function PlatformMonitoring({ onSessionExpired }: { onSessionExpi
         </div>
       </div>
       <div className="pm-actions">
+        <select className="pm-environment" aria-label="Filtrar por entorno" value={environment} onChange={event => setEnvironment(event.target.value)}>
+          <option value="all">Entorno: todos</option>
+          {environments.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+        </select>
         {grafana && <a className="pa-secondary" href={grafana} target="_blank" rel="noreferrer"><Gauge size={15} aria-hidden="true" /> Abrir Grafana</a>}
         <button type="button" className="pa-secondary" onClick={() => void load()} disabled={loading}>
           <RefreshCw size={15} className={loading ? 'pm-spin' : undefined} aria-hidden="true" /> Actualizar
@@ -225,15 +275,16 @@ export default function PlatformMonitoring({ onSessionExpired }: { onSessionExpi
 
     {error && <div className="pa-error" role="alert"><CircleAlert size={17} /><span>{error}</span></div>}
 
-    {snapshot && <>
-      <Summary snapshot={snapshot} />
+    {view && <>
+      <Summary snapshot={view} />
       <section aria-labelledby="pm-tenants-title">
         <header className="pm-usage-heading"><h2 id="pm-tenants-title">Instituciones</h2><span>Uso actual · el máximo entre sus servidores</span></header>
-        {snapshot.tenants.length === 0
-          ? <div className="pm-panel pm-empty-line">Todavía no hay instituciones registradas.</div>
-          : <div className="pm-tenants">{snapshot.tenants.map(tenant => <TenantCard key={tenant.slug} tenant={tenant} snapshot={snapshot} />)}</div>}
+        {view.tenants.length === 0
+          ? <div className="pm-panel pm-empty-line">{environment === 'all' ? 'Todavía no hay instituciones registradas.' : 'No hay instituciones en este entorno.'}</div>
+          : <div className="pm-tenants">{view.tenants.map(tenant => <TenantCard key={tenant.slug} tenant={tenant} snapshot={view} />)}</div>}
       </section>
-      <div className="pm-details"><PlatformPanel snapshot={snapshot} /><AlertsPanel snapshot={snapshot} /></div>
+      <div className="pm-details"><AlertsPanel alerts={view.alerts} now={now} /><EventsPanel events={view.events} /></div>
+      <PlatformPanel snapshot={view} />
     </>}
   </div>
 }

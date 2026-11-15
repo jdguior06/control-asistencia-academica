@@ -93,11 +93,20 @@ export interface MonitoredServer {
   up: boolean
 }
 
+// Una alerta de Grafana guardada por el portal (RF-29): tenant afectado y hora de detección.
 export interface MonitoringAlert {
+  id: string
   name: string
   tenant?: string
+  institutionName?: string
   server?: string
+  environment?: string
   severity?: string
+  summary?: string
+  status: 'firing' | 'resolved'
+  startedAt: string
+  resolvedAt?: string
+  email?: 'enviado' | 'error' | 'sin-smtp' | 'sin-destinatarios'
 }
 
 // Estado de una institución: sus trabajos (base de datos) y sus métricas (Prometheus).
@@ -112,6 +121,7 @@ export interface MonitoredTenant {
   invitationStatus?: InvitationStatus
   state: InfrastructureState
   activeAction?: ProvisioningJob['action']
+  deleted?: boolean
   monitored?: boolean
   api?: boolean
   agentsUp?: number
@@ -122,6 +132,7 @@ export interface MonitoredTenant {
   requests?: number
   latency?: number
   connections?: number
+  errors?: number
   servers: MonitoredServer[]
   alerts?: number
 }
@@ -133,6 +144,7 @@ export interface MonitoringSnapshot {
   grafanaUrl?: string
   platform: MonitoredServer[]
   alerts: MonitoringAlert[]
+  events: MonitoringAlert[]
   tenants: MonitoredTenant[]
 }
 

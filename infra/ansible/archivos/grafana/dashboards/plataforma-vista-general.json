@@ -8,7 +8,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "editable": false,
   "refresh": "30s",
   "time": {
@@ -812,13 +812,65 @@
       }
     },
     {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Errores del backend (5xx por minuto)",
+      "description": "Respuestas 5xx de /api por tenant (Nginx del frontend).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 27,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (tenant) (increase(nginx_api_errores_total{tenant!=\"plataforma\", entorno=~\"$entorno\"}[1m]))",
+          "legendFormat": "{{tenant}}"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
       "id": 14,
       "type": "row",
       "title": "Alertas",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 27,
+        "y": 35,
         "w": 24,
         "h": 1
       },
@@ -831,7 +883,7 @@
       "description": "Reglas de Grafana en estado Firing o Pending. El tenant afectado está en el mensaje.",
       "gridPos": {
         "x": 0,
-        "y": 28,
+        "y": 36,
         "w": 24,
         "h": 8
       },

@@ -362,6 +362,56 @@ regla 9090 desde el portal; no recrea nada) y `ansible-playbook -i inventarios/p
 plataforma.yml` (variables `PLATFORM_PROMETHEUS_URL` / `PLATFORM_GRAFANA_URL`, migración y
 worker nuevo).
 
+# Errores, alertas y correos (RF-26 a RF-29)
+
+- **Errores del backend (RF-26):** el Nginx del frontend escribe una línea por cada
+  respuesta de `/api` en `/var/log/nginx-api/acceso.log` y el Collector las cuenta:
+  `nginx_api_peticiones_total` y `nginx_api_errores_total` (5xx). Se ven en Grafana
+  (Tenant - Detalle → "Errores del backend", Plataforma → "Errores del backend") y en
+  la tarjeta de cada institución del portal.
+- **Alerta de errores (RF-28):** regla "Aumentan los errores del backend (5xx)": más
+  de 5 errores en 5 minutos. Las otras reglas: servidor o agente caído, API sin
+  respuesta, servicio detenido, CPU, memoria, disco y conexiones de PostgreSQL.
+- **Alertas en el portal (RF-29):** Grafana envía cada alerta (al dispararse y al
+  resolverse) a `http://<ip privada plataforma>/api/platform/alerts/grafana` con un
+  token (`generado/alertas-token`, se genera solo). El gateway solo acepta ese aviso
+  desde la red privada. Monitoreo muestra las alertas activas con su tenant y hora de
+  detección, y los eventos de las últimas 24 horas.
+- **Por entorno (RF-27):** filtro "Entorno" en Monitoreo del portal y en los dos
+  paneles de Grafana.
+- **Correos (opcional):** en `vault.yml` agrega tu correo y una cuenta de Gmail con
+  [contraseña de aplicación](https://myaccount.google.com/apppasswords):
+  ```yaml
+  vault_alertas_correos: "tu-correo@ejemplo.com"
+  vault_alertas_admin_tenant: true      # también al administrador del tenant afectado
+  vault_smtp_user: "cuenta-que-envia@gmail.com"
+  vault_smtp_password: "abcdabcdabcdabcd"
+  ```
+  Las invitaciones siguen en vista previa; el SMTP solo se usa para las alertas.
+
+Para aplicarlo: `git push` y `plataforma.yml` (Grafana, portal, gateway y la copia del
+repo del worker). Los tenants nuevos ya traen el registro de errores; en los que ya
+existen, volver a correr `tenant.yml` desde el servidor (como lo hace el worker):
+
+```bash
+ssh ec2-user@<ip plataforma>
+sudo -iu iac                                   # queda en /opt/iac/repo/infra
+python3 scripts/inventario.py <slug> --en-plataforma
+cd ansible && ansible-playbook -i inventarios/<slug>.ini tenant.yml -e tenant_invitacion=true
+```
+
+### Alerta de ejemplo para la demo
+
+Detener la API de un tenant: en 1-2 minutos se dispara "La API no responde" (y, si
+alguien usa la app, "Aumentan los errores del backend" por los 502), aparece en
+Monitoreo del portal y llega el correo. Al encenderla, se resuelve sola.
+
+```bash
+# en el servidor, como iac y en infra/ansible (después de inventario.py, ver arriba)
+ansible <slug>-backend -i inventarios/<slug>.ini -b -m systemd -a "name=asistencia-api state=stopped"
+ansible <slug>-backend -i inventarios/<slug>.ini -b -m systemd -a "name=asistencia-api state=started"
+```
+
 ## Pendiente (siguientes etapas)
 
 - **Respaldos** de la base de cada tenant y recuperación automática (alta disponibilidad barata).

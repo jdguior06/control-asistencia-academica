@@ -137,6 +137,39 @@
     mode: "0640"
   notify: Reiniciar Grafana
 
+# Cada alerta (al dispararse y al resolverse) se envía al portal, que la muestra en
+# Monitoreo con su tenant y hora (RF-29) y manda los correos. Lleva el token: 0640.
+- name: Aviso de las alertas al portal (punto de contacto y política)
+  ansible.builtin.copy:
+    dest: /etc/grafana/provisioning/alerting/notificaciones.yml
+    owner: root
+    group: grafana
+    mode: "0640"
+    content: |
+      # Administrado por Ansible (infra/ansible). No editar a mano.
+      apiVersion: 1
+      contactPoints:
+        - orgId: 1
+          name: portal
+          receivers:
+            - uid: portal-webhook
+              type: webhook
+              disableResolveMessage: false
+              settings:
+                url: http://{{ hostvars[groups['plataforma'][0]]['ip_privada'] }}/api/platform/alerts/grafana
+                httpMethod: POST
+                authorization_scheme: Bearer
+                authorization_credentials: {{ alertas_token }}
+      policies:
+        - orgId: 1
+          receiver: portal
+          group_by: [grafana_folder, alertname, tenant, servidor]
+          group_wait: 30s
+          group_interval: 1m
+          repeat_interval: 4h
+  diff: false
+  notify: Reiniciar Grafana
+
 - name: Grafana activo al arrancar
   ansible.builtin.systemd:
     name: grafana-server

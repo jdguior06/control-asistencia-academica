@@ -266,6 +266,7 @@ async function tenantStates(pool) {
     invitationStatus: row.invitation_status,
     state: infrastructureState(row.last_action ? { action: row.last_action, status: row.last_status } : null),
     activeAction: row.active_action ?? undefined,
+    deleted: row.last_action === 'delete' && row.last_status === 'succeeded',
   }));
 }
 

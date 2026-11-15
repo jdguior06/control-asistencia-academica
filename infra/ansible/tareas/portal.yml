@@ -25,6 +25,19 @@
       # Pantalla "Monitoreo" del portal: consulta a Prometheus por la red privada.
       PLATFORM_PROMETHEUS_URL=http://{{ hostvars[groups['monitoreo'][0]]['ip_privada'] }}:{{ prometheus_puerto }}
       PLATFORM_GRAFANA_URL=http://{{ hostvars[groups['monitoreo'][0]]['ansible_host'] }}:{{ grafana_puerto }}
+      # Alertas de Grafana (RF-29): llegan a POST /api/platform/alerts/grafana con este token.
+      PLATFORM_ALERT_TOKEN={{ alertas_token }}
+      # Correos de las alertas: a estos destinatarios y al administrador del tenant afectado.
+      PLATFORM_ALERT_EMAILS={{ vault_alertas_correos | default('') }}
+      PLATFORM_ALERT_NOTIFY_TENANT_ADMIN={{ 'true' if (vault_alertas_admin_tenant | default(true)) else 'false' }}
+      {% if vault_smtp_password | default('') | length > 0 %}
+      # SMTP solo para las alertas: las invitaciones siguen en vista previa.
+      SMTP_HOST={{ vault_smtp_host | default('smtp.gmail.com') }}
+      SMTP_PORT={{ vault_smtp_port | default(587) }}
+      SMTP_USER={{ vault_smtp_user }}
+      SMTP_PASSWORD={{ vault_smtp_password }}
+      SMTP_FROM={{ vault_smtp_from | default(vault_smtp_user) }}
+      {% endif %}
       # PLATFORM_TENANT_ORIGINS lo escribe gateway.yml en /etc/asistencia-portal/origenes.env
   diff: false
   notify: Reiniciar portal

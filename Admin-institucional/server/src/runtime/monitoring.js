@@ -1,6 +1,7 @@
 // Monitoreo del portal: el estado de cada institución según Prometheus (las mismas
 // consultas que el panel "Plataforma - Vista general" de Grafana) y según sus trabajos.
 const { tenantStates } = require('./provisioning');
+const { alertsForMonitoring } = require('./alerts');
 
 const T = 'tenant!="plataforma"';
 const queries = {
@@ -14,8 +15,8 @@ const queries = {
   latency: `max by (tenant) (httpcheck_duration_milliseconds{rol="backend", http_url=~".*/api/health", ${T}})`,
   connections: `sum by (tenant) (postgresql_backends{${T}})`,
   servers: `max by (tenant, servidor, rol) (up{job="node", ${T}})`,
+  errors: `sum by (tenant) (increase(nginx_api_errores_total{${T}}[15m]))`,
   platform: 'max by (servidor) (up{tenant="plataforma"})',
-  alerts: 'ALERTS{alertstate="firing"}',
 };
 
 async function query(base, expr) {
@@ -38,14 +39,19 @@ function rounded(value, digits = 1) {
 async function monitoringSnapshot(pool) {
   const base = process.env.PLATFORM_PROMETHEUS_URL?.trim();
   const grafana = process.env.PLATFORM_GRAFANA_URL?.trim().replace(/\/$/, '');
-  const tenants = await tenantStates(pool);
+  const [tenants, events] = await Promise.all([tenantStates(pool), alertsForMonitoring(pool)]);
+  // Alertas: las guarda el portal cuando Grafana avisa (alerts.js), no se piden a Prometheus.
+  const active = events.filter((event) => event.status === 'firing');
   const snapshot = {
     updatedAt: new Date().toISOString(),
     prometheus: base ? 'ok' : 'not-configured',
     grafanaUrl: grafana || undefined,
     platform: [],
-    alerts: [],
-    tenants: tenants.map((tenant) => ({ ...tenant, servers: [] })),
+    alerts: active,
+    events,
+    tenants: tenants.map((tenant) => ({
+      ...tenant, servers: [], alerts: active.filter((alert) => alert.tenant === tenant.slug).length,
+    })),
   };
   if (!base) return snapshot;
 
@@ -59,9 +65,6 @@ async function monitoringSnapshot(pool) {
 
   const values = Object.fromEntries(Object.entries(results).map(([key, result]) => [key, byTenant(result)]));
   snapshot.platform = results.platform.map((item) => ({ server: item.metric.servidor, up: item.value[1] === '1' }));
-  snapshot.alerts = results.alerts.map((item) => ({
-    name: item.metric.alertname, tenant: item.metric.tenant, server: item.metric.servidor, severity: item.metric.severity,
-  }));
   snapshot.tenants = snapshot.tenants.map((tenant) => {
     const slug = tenant.slug;
     const seen = slug in values.agentsTotal;
@@ -77,10 +80,10 @@ async function monitoringSnapshot(pool) {
       requests: rounded(values.requests[slug], 2),
       latency: rounded(values.latency[slug], 0),
       connections: values.connections[slug],
+      errors: slug in values.errors ? Math.round(values.errors[slug]) : undefined,
       servers: results.servers.filter((item) => item.metric.tenant === slug)
         .map((item) => ({ server: item.metric.servidor, role: item.metric.rol, up: item.value[1] === '1' }))
         .sort((a, b) => a.server.localeCompare(b.server)),
-      alerts: snapshot.alerts.filter((alert) => alert.tenant === slug).length,
     };
   });
   return snapshot;

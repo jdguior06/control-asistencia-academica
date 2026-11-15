@@ -150,3 +150,15 @@
 @media (max-width: 330px) {
   .pm-summary, .pm-meters { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* RF-27 y RF-29: entorno, hora de detección y eventos recientes. */
+.pm-actions .pm-environment { width: auto; min-height: 38px; padding: 0 30px 0 10px; font-size: 13px; }
+.pm-event-time { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-top: 3px !important; color: var(--pm-muted); font-size: 11px; }
+.pm-event-time span { display: inline-flex; align-items: center; gap: 3px; }
+.pm-timeline { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; max-height: 360px; overflow: auto; }
+.pm-timeline li { position: relative; display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 9px; padding: 8px 0 8px 2px; border-bottom: 1px solid #f0ecf6; }
+.pm-timeline li:last-child { border-bottom: 0; }
+.pm-timeline strong { font-size: 12px; }
+.pm-timeline p { color: var(--pm-muted); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+.pm-timeline-dot { width: 10px; height: 10px; margin-top: 4px; border-radius: 50%; background: #43a072; box-shadow: 0 0 0 3px #e4f7ec; }
+.pm-timeline-firing .pm-timeline-dot { background: #c94848; box-shadow: 0 0 0 3px #fdecec; }

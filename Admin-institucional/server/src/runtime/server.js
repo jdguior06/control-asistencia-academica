@@ -4,6 +4,7 @@ const { InvitationError, allowedTenantOrigin, deliverInvitation, issueTenantInvi
 const { ProvisioningError, createInstitution, infrastructureState, latestJob, startJob } = require('./provisioning');
 const { audit, listAudit } = require('./audit');
 const { monitoringSnapshot } = require('./monitoring');
+const { authorized, notify, receiveGrafana } = require('./alerts');
 const {
   bootstrapAdmin, configuredAdmin, closeSession, limitLogins, newToken,
   openSession, sessionUser, tokenHash, tokenPattern, validEmail,
@@ -301,6 +302,15 @@ function createApp(pool, platformOnly) {
     }
     next();
   });
+  // Avisos de Grafana (RF-29): sin sesión, con token; el gateway solo los acepta desde la
+  // red privada. Va antes del límite de 16 kB porque un aviso puede traer varias alertas.
+  app.post('/api/platform/alerts/grafana', express.json({ limit: '512kb' }), async (request, response) => {
+    if (!authorized(request)) throw new HttpError(401, 'Token de alertas inválido.');
+    const changes = await receiveGrafana(pool, request.body);
+    response.json({ received: changes.length });
+    notify(pool, changes).catch((error) => console.error('Error al avisar las alertas.', error.message));
+  });
+
   app.use(express.json({ limit: '16kb' }));
 
   const healthPaths = platformOnly ? ['/api/health', '/api/platform/health'] : '/api/platform/health';

@@ -13,3 +13,11 @@ vault_grafana_password: CambiarEstaClave3         # usuario admin de Grafana
 # Worker del portal (crea los tenants):
 vault_pulumi_passphrase: CambiarEstaFrase4         # cifra la configuración de cada stack de Pulumi
 vault_infracost_api_key: ""                        # opcional: clave gratuita de infracost.io (costo estimado)
+
+# Alertas por correo (opcional). Sin SMTP, las alertas igual se ven en el portal.
+vault_alertas_correos: ""                          # tu correo (varios: separados por coma)
+vault_alertas_admin_tenant: true                   # avisar también al administrador del tenant
+vault_smtp_user: ""                                # cuenta de Gmail que envía
+vault_smtp_password: ""                            # contraseña de aplicación de Gmail (16 letras, sin espacios)
+# vault_smtp_host: smtp.gmail.com
+# vault_smtp_port: 587

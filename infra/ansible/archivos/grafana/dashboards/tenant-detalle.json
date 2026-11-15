@@ -8,7 +8,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "editable": false,
   "refresh": "30s",
   "time": {
@@ -18,6 +18,30 @@
   "templating": {
     "list": [
       {
+        "name": "entorno",
+        "label": "Entorno",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(up{tenant!=\"plataforma\"}, entorno)",
+          "refId": "entorno"
+        },
+        "definition": "label_values(up{tenant!=\"plataforma\"}, entorno)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "multi": false,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
         "name": "tenant",
         "label": "Tenant",
         "type": "query",
@@ -26,10 +50,10 @@
           "uid": "prometheus"
         },
         "query": {
-          "query": "label_values(up{tenant!=\"plataforma\"}, tenant)",
+          "query": "label_values(up{tenant!=\"plataforma\", entorno=~\"$entorno\"}, tenant)",
           "refId": "tenant"
         },
-        "definition": "label_values(up{tenant!=\"plataforma\"}, tenant)",
+        "definition": "label_values(up{tenant!=\"plataforma\", entorno=~\"$entorno\"}, tenant)",
         "refresh": 2,
         "sort": 1,
         "includeAll": false,
@@ -509,13 +533,198 @@
       }
     },
     {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Errores del backend (respuestas 5xx por minuto)",
+      "description": "Respuestas 5xx de /api contadas en el Nginx del frontend (500, 502 si el backend no responde, 503...).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 12,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(nginx_api_errores_total{tenant=\"$tenant\"}[1m]))",
+          "legendFormat": "5xx por minuto"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 33,
+      "type": "stat",
+      "title": "Errores 5xx (últimos 15 min)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 15,
+        "w": 6,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(nginx_api_errores_total{tenant=\"$tenant\"}[15m])) or vector(0)",
+          "legendFormat": "errores"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "auto",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "links": []
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 34,
+      "type": "stat",
+      "title": "% de errores (15 min)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 15,
+        "w": 6,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "100 * sum(increase(nginx_api_errores_total{tenant=\"$tenant\"}[15m])) / clamp_min(sum(increase(nginx_api_peticiones_total{tenant=\"$tenant\"}[15m])), 1)",
+          "legendFormat": "% 5xx"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "orientation": "auto",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "links": [],
+          "decimals": 1
+        },
+        "overrides": []
+      }
+    },
+    {
       "id": 9,
       "type": "row",
       "title": "Base de datos (PostgreSQL)",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 15,
+        "y": 22,
         "w": 24,
         "h": 1
       },
@@ -532,7 +741,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 16,
+        "y": 23,
         "w": 6,
         "h": 5
       },
@@ -600,7 +809,7 @@
       },
       "gridPos": {
         "x": 6,
-        "y": 16,
+        "y": 23,
         "w": 6,
         "h": 5
       },
@@ -660,7 +869,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 16,
+        "y": 23,
         "w": 6,
         "h": 5
       },
@@ -720,7 +929,7 @@
       },
       "gridPos": {
         "x": 18,
-        "y": 16,
+        "y": 23,
         "w": 6,
         "h": 5
       },
@@ -780,7 +989,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 21,
+        "y": 28,
         "w": 12,
         "h": 7
       },
@@ -845,7 +1054,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 21,
+        "y": 28,
         "w": 12,
         "h": 7
       },
@@ -895,7 +1104,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 28,
+        "y": 35,
         "w": 24,
         "h": 1
       },
@@ -912,7 +1121,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 29,
+        "y": 36,
         "w": 8,
         "h": 7
       },
@@ -966,7 +1175,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 29,
+        "y": 36,
         "w": 8,
         "h": 7
       },
@@ -1020,7 +1229,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 29,
+        "y": 36,
         "w": 8,
         "h": 7
       },
@@ -1070,7 +1279,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 36,
+        "y": 43,
         "w": 24,
         "h": 1
       },
@@ -1087,7 +1296,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 37,
+        "y": 44,
         "w": 8,
         "h": 8
       },
@@ -1143,7 +1352,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 37,
+        "y": 44,
         "w": 8,
         "h": 8
       },
@@ -1199,7 +1408,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 37,
+        "y": 44,
         "w": 8,
         "h": 8
       },
@@ -1266,7 +1475,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 45,
+        "y": 52,
         "w": 12,
         "h": 7
       },
@@ -1320,7 +1529,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 45,
+        "y": 52,
         "w": 12,
         "h": 7
       },
@@ -1370,7 +1579,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 52,
+        "y": 59,
         "w": 24,
         "h": 1
       },
@@ -1387,7 +1596,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 53,
+        "y": 60,
         "w": 12,
         "h": 8
       },
@@ -1441,7 +1650,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 53,
+        "y": 60,
         "w": 12,
         "h": 8
       },
@@ -1491,7 +1700,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 61,
+        "y": 68,
         "w": 24,
         "h": 1
       },
@@ -1508,7 +1717,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 62,
+        "y": 69,
         "w": 12,
         "h": 7
       },
@@ -1564,7 +1773,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 62,
+        "y": 69,
         "w": 12,
         "h": 7
       },

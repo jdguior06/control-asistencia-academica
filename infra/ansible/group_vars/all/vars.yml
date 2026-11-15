@@ -20,6 +20,9 @@ portal_admin_nombre: Operador
 portal_admin_email: operador@example.com
 portal_db_password: "{{ vault_portal_db_password }}"
 portal_admin_password: "{{ vault_portal_admin_password }}"
+# Grafana avisa al portal de cada alerta (RF-29) con este token. Se genera solo la
+# primera vez en infra/generado/ (no va a git) y lo usan los dos servidores.
+alertas_token: "{{ lookup('ansible.builtin.password', playbook_dir ~ '/../generado/alertas-token', chars=['ascii_letters', 'digits'], length=40) }}"
 
 # ---------------------------------------------------------------- Herramientas del worker (vm-plataforma)
 terraform_version: "1.15.4"

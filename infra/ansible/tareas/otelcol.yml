@@ -29,6 +29,46 @@
           }
       notify: Recargar Nginx
 
+    # Errores del backend (RF-26): Nginx escribe una línea corta por cada respuesta de /api
+    # (estado y duración) y el Collector las cuenta. Carpeta legible por el Collector.
+    - name: Carpeta del registro de /api
+      ansible.builtin.file:
+        path: /var/log/nginx-api
+        state: directory
+        owner: root
+        group: otelcol-contrib
+        mode: "0750"
+
+    - name: Registro de /api para el Collector
+      ansible.builtin.copy:
+        dest: /etc/nginx/conf.d/registro-api.conf
+        mode: "0644"
+        content: |
+          # Administrado por Ansible (infra/ansible). No editar a mano.
+          # Una línea por respuesta de /api: "<estado> <segundos>". Incluye los chequeos de
+          # /api/health de cada 15 s, que mantienen viva la métrica aunque no haya visitas.
+          log_format api_otel '$status $request_time';
+          map $uri $registrar_api {
+            ~^/api/  1;
+            default  0;
+          }
+          access_log /var/log/nginx-api/acceso.log api_otel if=$registrar_api;
+      notify: Recargar Nginx
+
+    - name: Rotación del registro de /api (con copytruncate, Nginx no necesita reabrirlo)
+      ansible.builtin.copy:
+        dest: /etc/logrotate.d/nginx-api
+        mode: "0644"
+        content: |
+          # Administrado por Ansible (infra/ansible). No editar a mano.
+          /var/log/nginx-api/acceso.log {
+            daily
+            rotate 2
+            missingok
+            notifempty
+            copytruncate
+          }
+
     - name: Probar la configuración de Nginx
       ansible.builtin.command: nginx -t
       changed_when: false
@@ -84,7 +124,7 @@
       # OpenTelemetry Collector en {{ inventory_hostname }}: publica en formato
       # Prometheus en el puerto {{ otel_puerto_prometheus }}.
       {% set receptores = ['otlp'] %}
-      {% if 'frontend' in group_names %}{% set receptores = receptores + ['nginx', 'http_check'] %}{% endif %}
+      {% if 'frontend' in group_names %}{% set receptores = receptores + ['nginx', 'http_check', 'count/api', 'sum/api'] %}{% endif %}
       {% if 'backend' in group_names %}{% set receptores = receptores + ['http_check'] %}{% endif %}
       {% if 'base' in group_names %}{% set receptores = receptores + ['postgresql'] %}{% endif %}
       receivers:
@@ -107,6 +147,16 @@
               method: GET
             - endpoint: http://127.0.0.1/api/health
               method: GET
+        # Respuestas de /api (registro-api.conf). "error" = 1 si es 5xx.
+        file_log/api:
+          include: [/var/log/nginx-api/acceso.log]
+          start_at: end
+          operators:
+            - type: regex_parser
+              regex: '^(?P<estado>(?P<clase>\d)\d\d) (?P<duracion>[\d.]+)$'
+            - type: add
+              field: attributes.error
+              value: 'EXPR(attributes.clase == "5" ? 1 : 0)'
       {% endif %}
       {% if 'backend' in group_names %}
         # /api/health también prueba la conexión a la base.
@@ -128,8 +178,25 @@
             insecure: true
       {% endif %}
 
+      {% if 'frontend' in group_names %}
+      # Cuentan las líneas del registro de /api y las publican como contadores:
+      # nginx_api_peticiones_total y nginx_api_errores_total (5xx).
+      connectors:
+        count/api:
+          logs:
+            nginx_api_peticiones:
+              description: Respuestas de /api (incluye los chequeos de salud).
+        sum/api:
+          logs:
+            nginx_api_errores:
+              description: Respuestas 5xx de /api (errores del backend).
+              source_attribute: error
+      {% endif %}
+
       processors:
         batch: {}
+        # Los conectores entregan deltas; Prometheus necesita contadores acumulados.
+        delta_to_cumulative: {}
 
       exporters:
         prometheus:
@@ -144,8 +211,13 @@
         pipelines:
           metrics:
             receivers: [{{ receptores | join(', ') }}]
-            processors: [batch]
+            processors: [delta_to_cumulative, batch]
             exporters: [prometheus]
+      {% if 'frontend' in group_names %}
+          logs/api:
+            receivers: [file_log/api]
+            exporters: [count/api, sum/api]
+      {% endif %}
           traces:
             receivers: [otlp]
             processors: [batch]
