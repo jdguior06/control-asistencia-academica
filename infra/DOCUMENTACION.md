@@ -278,6 +278,16 @@ El trabajo (`update` en `platform_jobs`, `aprovisionar.sh actualizar`) sigue est
 8. Parches de seguridad (opcional).
 9. Verificar (`/api/health`).
 
+Si no hay ningún cambio desde el último despliegue, el botón dice **"Ya está al día"** y
+queda deshabilitado:
+
+- Al marcar los parches pasa a **"Instalar parches"**. Ese trabajo (`mode: patches`,
+  `aprovisionar.sh actualizar --solo-parches si`) solo instala los parches y verifica,
+  en 1 o 2 minutos: no trae código, no escanea, no aplica el motor ni hace respaldo,
+  porque la base no cambia.
+- El enlace **"Volver a aplicar igual"** repite todo el flujo sobre el mismo commit y sin
+  respaldo. Sirve para reparar algo que se cambió a mano en los servidores.
+
 Las versiones (RF-13) quedan en el trabajo. La auditoría registra la acción
 "Actualización" con la versión anterior y la nueva. Si algo falla, la infraestructura
 sigue "Activa" y se puede reintentar, o restaurar el respaldo previo.

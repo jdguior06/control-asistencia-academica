@@ -77,7 +77,7 @@ async function claim(pool) {
   if (job.action === 'update') {
     const { rows: [deployed] } = await pool.query(`
       SELECT versions FROM platform_jobs
-      WHERE tenant_id = $1 AND status = 'succeeded' AND action IN ('create', 'change_plan', 'update')
+      WHERE tenant_id = $1 AND status = 'succeeded' AND action IN ('create', 'change_plan', 'update') AND coalesce(params->>'mode', '') <> 'patches'
       ORDER BY created_at DESC LIMIT 1
     `, [job.tenant_id]);
     const v = deployed?.versions ?? {};
@@ -99,7 +99,9 @@ function runScript(pool, job) {
   // El disco que ya tienen los servidores (no se achica; con CloudFormation no cambia).
   if (['change_plan', 'update'].includes(job.action) && job.params?.disk) args.push('--disco', String(job.params.disk));
   if (['backup', 'update'].includes(job.action) && job.since) args.push('--conservar-desde', job.since);
-  if (job.action === 'update') {
+  if (job.action === 'update' && job.params?.mode === 'patches') {
+    args.push('--solo-parches', 'si');
+  } else if (job.action === 'update') {
     args.push('--respaldar-antes', job.params?.backupFirst ? 'si' : 'no', '--parches', job.params?.securityPatches ? 'si' : 'no');
   }
 
@@ -280,7 +282,7 @@ async function checkRepo(pool) {
     FROM platform_tenants t
     JOIN LATERAL (
       SELECT versions FROM platform_jobs
-      WHERE tenant_id = t.id AND status = 'succeeded' AND action IN ('create', 'change_plan', 'update')
+      WHERE tenant_id = t.id AND status = 'succeeded' AND action IN ('create', 'change_plan', 'update') AND coalesce(params->>'mode', '') <> 'patches'
       ORDER BY created_at DESC LIMIT 1
     ) j ON true
   `);
@@ -326,7 +328,7 @@ async function maybeCheckRepo(pool) {
 async function process_(pool, job) {
   console.log(`Trabajo ${job.id}: ${job.action} ${job.tenant.slug} (${job.tenant.engine}, ${job.tenant.region})`);
   const started = Date.now();
-  if (job.action === 'update') {
+  if (job.action === 'update' && job.params?.mode !== 'patches') {
     // RF-15: primero la copia del repositorio del worker pasa al último commit de su rama.
     try {
       const lines = await pullRepo();
@@ -398,6 +400,8 @@ async function process_(pool, job) {
     description: code === 0
       ? job.action === 'change_plan'
         ? `${DONE[job.action]}: ${job.params.fromPlan} → ${job.params.toPlan} (${job.tenant.engine}).`
+        : job.action === 'update' && job.params?.mode === 'patches'
+          ? 'Se instalaron los parches de seguridad del sistema.'
         : job.action === 'update'
           ? `${DONE[job.action]} (${job.tenant.engine}${versions.repo_commit ? `, commit ${versions.repo_commit}` : ''}${result?.respaldo ? ', con respaldo previo' : ''}${job.params?.securityPatches ? ', con parches de seguridad' : ''}).`
         : `${DONE[job.action]}${['backup', 'restore'].includes(job.action) ? '' : ` (${job.tenant.engine})`}.`

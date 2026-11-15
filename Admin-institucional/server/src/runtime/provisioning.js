@@ -73,6 +73,7 @@ function serializeJob(row) {
     error: row.error ?? undefined,
     versions: row.versions && Object.keys(row.versions).length ? row.versions : undefined,
     backupKey: row.params?.backupKey ?? undefined,
+    mode: row.params?.mode ?? undefined,
     requestedBy: row.requested_by ?? undefined,
     createdAt: row.created_at,
     startedAt: row.started_at ?? undefined,
@@ -193,6 +194,7 @@ async function enqueue(client, tenant, action, user, params = {}) {
       resource: tenant.institution_name ?? tenant.slug, reference: tenant.slug,
       description: action === 'change_plan' ? `${descriptions[action]} (${params.fromPlan} → ${params.toPlan}, ${tenant.engine}).`
         : action === 'restore' ? `${descriptions[action]} (${params.backupKey}).`
+        : action === 'update' && params.mode === 'patches' ? 'Se inició la instalación de los parches de seguridad.'
         : action === 'update' ? `${descriptions[action]} (${tenant.engine}${params.backupFirst ? ', con respaldo previo' : ''}${params.securityPatches ? ', con parches de seguridad' : ''}).`
         : action === 'backup' ? `${descriptions[action]}.` : `${descriptions[action]} con ${tenant.engine}.`,
       details: { jobId: job.id, engine: tenant.engine, region: tenant.region, plan: tenant.plan_id, ...(params.backupKey ? { backup: params.backupKey } : {}) },
@@ -295,8 +297,11 @@ async function startJob(pool, requestId, action, confirmation, user, options = {
       // CloudFormation cambiarlo reemplazaría el servidor).
       const disks = await planDisks(client);
       const disk = tenant.disk_gb ?? disks[tenant.plan_id] ?? 0;
+      // mode "patches": el tenant ya está al día; solo los parches de seguridad (sin respaldo,
+      // escaneos ni motor: la base y la infraestructura no cambian).
+      if (options.mode === 'patches') return enqueue(client, tenant, action, user, { mode: 'patches', securityPatches: true });
       return enqueue(client, tenant, action, user, {
-        backupFirst: options.backupFirst !== false, securityPatches: options.securityPatches === true, disk,
+        mode: 'full', backupFirst: options.backupFirst !== false, securityPatches: options.securityPatches === true, disk,
       });
     }
     if (action === 'restore') {
@@ -338,7 +343,7 @@ async function updatePreview(pool, requestId) {
   `);
   const { rows: [deployed] } = await pool.query(`
     SELECT versions, finished_at FROM platform_jobs
-    WHERE tenant_id = $1 AND status = 'succeeded' AND action IN ('create', 'change_plan', 'update')
+    WHERE tenant_id = $1 AND status = 'succeeded' AND action IN ('create', 'change_plan', 'update') AND coalesce(params->>'mode', '') <> 'patches'
     ORDER BY created_at DESC LIMIT 1
   `, [tenant.id]);
   const { rows: [repo] } = await pool.query(`

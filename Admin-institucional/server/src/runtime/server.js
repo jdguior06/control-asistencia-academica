@@ -518,6 +518,7 @@ function createApp(pool, platformOnly) {
     requireRequestId(request.params.id);
     response.status(201).json({
       job: await startJob(pool, request.params.id, 'update', '', response.locals.user, {
+        mode: request.body?.mode === 'patches' ? 'patches' : 'full',
         backupFirst: request.body?.backupFirst !== false, securityPatches: request.body?.securityPatches === true,
       }),
     });

@@ -81,6 +81,7 @@ export interface ProvisioningJob {
   log: string
   versions?: Record<string, string>
   backupKey?: string
+  mode?: 'full' | 'patches'
   requestedBy?: string
   result?: { url?: string; motor?: string; previewUrl?: string; invitationStatus?: InvitationStatus; invitationError?: string }
   error?: string

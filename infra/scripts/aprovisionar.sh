@@ -9,7 +9,8 @@
 #   bash scripts/aprovisionar.sh suspender|reanudar --slug utepsa --motor terraform --region us-east-2 --plan basico --numero 1
 #   bash scripts/aprovisionar.sh respaldar --slug utepsa --motor terraform --region us-east-2 --plan basico --numero 1
 #   bash scripts/aprovisionar.sh restaurar --slug utepsa ... --respaldo tenants/utepsa/20261115-030000.dump
-#   bash scripts/aprovisionar.sh actualizar --slug utepsa ... [--respaldar-antes si] [--parches si]
+#   bash scripts/aprovisionar.sh actualizar --slug utepsa ... [--respaldar-antes si] [--parches si] [--solo-parches si]
+#     (--solo-parches: el tenant ya está al día; solo dnf de seguridad y verificar)
 #     (RF-15: el mismo flujo de crear sobre un tenant que ya existe: plantillas y app nuevas)
 #
 # Pasos al crear:
@@ -39,14 +40,14 @@ trap 'echo "::error::$PASO::Falló: ${BASH_COMMAND:0:160}"' ERR
 # ------------------------------------------------------------------ entradas
 uso() { echo "Uso: $0 crear|actualizar|borrar|suspender|reanudar|respaldar|restaurar --slug S --motor M --region R --plan P [--entorno E] --numero N [--respaldo CLAVE]"; exit 2; }
 accion=${1:-}; [[ $# -gt 0 ]] && shift
-slug=""; motor=""; region="us-east-2"; plan="basico"; entorno="production"; numero=0; respaldo=""; disco=0; conservar_desde=""; respaldar_antes=no; parches=no
+slug=""; motor=""; region="us-east-2"; plan="basico"; entorno="production"; numero=0; respaldo=""; disco=0; conservar_desde=""; respaldar_antes=no; parches=no; solo_parches=no
 while [[ $# -gt 0 ]]; do
   [[ $# -ge 2 ]] || uso
   case $1 in
     --slug) slug=$2 ;; --motor) motor=$2 ;; --region) region=$2 ;;
     --plan) plan=$2 ;; --entorno) entorno=$2 ;; --numero) numero=$2 ;; --respaldo) respaldo=$2 ;;
     --disco) disco=$2 ;; --conservar-desde) conservar_desde=$2 ;;
-    --respaldar-antes) respaldar_antes=$2 ;; --parches) parches=$2 ;;
+    --respaldar-antes) respaldar_antes=$2 ;; --parches) parches=$2 ;; --solo-parches) solo_parches=$2 ;;
     *) uso ;;
   esac
   shift 2
@@ -77,7 +78,7 @@ if [[ $accion == actualizar ]]; then
 fi
 [[ $slug =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && ${#slug} -ge 3 && ${#slug} -le 30 ]] || fallar "slug '$slug' no válido (3 a 30: minúsculas, números y guiones)"
 (( actualizar )) && { [[ -f $INFRA/generado/tenants/$slug.json ]] || fallar "el tenant no tiene infraestructura: créala primero"; }
-[[ $respaldar_antes =~ ^(si|no)$ && $parches =~ ^(si|no)$ ]] || fallar "--respaldar-antes y --parches: si o no"
+[[ $respaldar_antes =~ ^(si|no)$ && $parches =~ ^(si|no)$ && $solo_parches =~ ^(si|no)$ ]] || fallar "--respaldar-antes, --parches y --solo-parches: si o no"
 [[ $motor =~ ^(terraform|opentofu|pulumi|cloudformation)$ ]] || fallar "motor '$motor' no válido"
 [[ $region =~ ^(us-east-1|us-east-2|us-west-2)$ ]] || fallar "región '$region' no disponible (us-east-1, us-east-2, us-west-2)"
 [[ $plan =~ ^(basico|estandar|avanzado)$ ]] || fallar "plan '$plan' sin infraestructura definida"
@@ -265,6 +266,43 @@ respaldo_json() { # ::resultado:: del respaldo (clave, tamaño y los que se borr
   python3 -c 'import json,sys; print(json.dumps({"respaldo":{"clave":sys.argv[1],"bytes":int(sys.argv[2]),"bucket":sys.argv[3]},"eliminados":sys.argv[4:]}))' \
     "$clave" "$bytes" "$BUCKET" "${eliminados[@]}"
 }
+
+# Parches de seguridad del sistema (actualizar con --parches o --solo-parches). Sin reiniciar.
+instalar_parches() {
+  siguiente "Parches de seguridad del sistema (dnf)"
+  ansible tenant -i "inventarios/$slug.ini" -b -m ansible.builtin.dnf -a "name=* state=latest security=true update_only=true"
+  # needs-restarting -r: 1 = hace falta reiniciar (kernel o glibc nuevos), 0 = no.
+  reinicio=$(ansible tenant -i "inventarios/$slug.ini" -b -o -m shell -a "dnf needs-restarting -r >/dev/null 2>&1; echo codigo=\$?" 2>/dev/null | grep -c 'codigo=1' || true)
+  if (( reinicio > 0 )); then
+    aviso "parches instalados; $reinicio servidor(es) necesitan reiniciar para aplicar el kernel (no se reinician solos)"
+  else
+    ok "parches de seguridad instalados (sin reinicio pendiente)"
+  fi
+}
+
+verificar() {
+  siguiente "Verificar"
+  url="http://$slug.$DOMINIO"
+  codigo=$(curl -s -o /dev/null -w '%{http_code}' -m 15 -H "Host: $slug.$DOMINIO" http://127.0.0.1/api/health || true)
+  [[ $codigo == 200 ]] || fallar "$url/api/health respondió $codigo"
+  echo "$url/api/health → 200 (gateway → peering → frontend → backend → base)"
+  ok "$url responde"
+}
+
+# ==================================================================== actualizar: solo parches
+# El tenant ya está en el último commit: no hace falta escanear ni aplicar el motor.
+if (( actualizar )) && [[ $solo_parches == si ]]; then
+  [[ -f $INFRA/generado/tenants/$slug.json ]] || fallar "el tenant no tiene infraestructura creada"
+  encendidos=$(servidores_en running | wc -w)
+  (( encendidos == 3 )) || fallar "los servidores no están encendidos ($encendidos de 3): reanuda el tenant primero"
+  cd "$INFRA"
+  python3 scripts/inventario.py "$slug" --en-plataforma >/dev/null
+  cd "$INFRA/ansible"
+  instalar_parches
+  verificar
+  python3 -c 'import json,sys; print("::resultado::"+json.dumps({"url":sys.argv[1],"soloParches":True}))' "$url"
+  exit 0
+fi
 
 if [[ $accion == respaldar || $accion == restaurar ]]; then
   preparar_respaldos
@@ -654,24 +692,11 @@ ok "app, base de datos, agentes y ruta en el gateway ($(( (SECONDS - inicio) / 6
 
 # ==================================================================== actualizar: parches
 if (( actualizar )) && [[ $parches == si ]]; then
-  siguiente "Parches de seguridad del sistema (dnf)"
-  ansible tenant -i "inventarios/$slug.ini" -b -m ansible.builtin.dnf -a "name=* state=latest security=true update_only=true"
-  # needs-restarting -r: 1 = hace falta reiniciar (kernel o glibc nuevos), 0 = no.
-  reinicio=$(ansible tenant -i "inventarios/$slug.ini" -b -o -m shell -a "dnf needs-restarting -r >/dev/null 2>&1; echo codigo=\$?" 2>/dev/null | grep -c 'codigo=1' || true)
-  if (( reinicio > 0 )); then
-    aviso "parches instalados; $reinicio servidor(es) necesitan reiniciar para aplicar el kernel (no se reinician solos)"
-  else
-    ok "parches de seguridad instalados (sin reinicio pendiente)"
-  fi
+  instalar_parches
 fi
 
 # ==================================================================== 6. verificar
-siguiente "Verificar"
-url="http://$slug.$DOMINIO"
-codigo=$(curl -s -o /dev/null -w '%{http_code}' -m 15 -H "Host: $slug.$DOMINIO" http://127.0.0.1/api/health || true)
-[[ $codigo == 200 ]] || fallar "$url/api/health respondió $codigo"
-echo "$url/api/health → 200 (gateway → peering → frontend → backend → base)"
-ok "$url responde"
+verificar
 python3 -c 'import json,sys
 r={"url":sys.argv[1],"motor":sys.argv[2],"region":sys.argv[3],"imagen":sys.argv[4] or None}
 if sys.argv[5]: r.update(json.loads(sys.argv[5]))

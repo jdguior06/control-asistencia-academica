@@ -21,9 +21,14 @@ export const verbs = {
   update: { queued: 'Actualización en cola', running: 'Actualizando…', succeeded: 'Actualizada', failed: 'La actualización falló' },
 } satisfies Record<ProvisioningJob['action'], Record<ProvisioningJob['status'], string>>
 
+// Actualizar con el tenant ya al día: solo los parches de seguridad.
+const patchVerbs = {
+  queued: 'Parches en cola', running: 'Instalando parches…', succeeded: 'Parches instalados', failed: 'Los parches fallaron',
+} satisfies Record<ProvisioningJob['status'], string>
+
 export function jobLabel(job: ProvisioningJob | null) {
   if (!job) return { text: 'Sin infraestructura', tone: 'idle' }
-  const text = verbs[job.action][job.status]
+  const text = job.action === 'update' && job.mode === 'patches' ? patchVerbs[job.status] : verbs[job.action][job.status]
   if (job.status === 'queued' || job.status === 'running') return { text, tone: 'busy' }
   if (job.status === 'failed') return { text, tone: 'error' }
   if (job.action === 'delete') return { text, tone: 'deleted' }

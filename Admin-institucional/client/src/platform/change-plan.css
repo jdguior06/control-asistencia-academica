@@ -28,3 +28,6 @@
 .up-options input { margin-top: 2px; accent-color: var(--pa-purple-dark); }
 .up-options span { display: grid; gap: 2px; }
 .up-options small { color: var(--pa-muted); line-height: 1.4; }
+.up-again { align-self: center; margin-left: auto; padding: 4px 2px; border: 0; background: none; color: var(--pa-muted); font-size: 12px; text-decoration: underline; cursor: pointer; }
+.up-again:hover:not(:disabled) { color: var(--pa-purple-dark); }
+.up-again:disabled { cursor: default; opacity: 0.6; }
