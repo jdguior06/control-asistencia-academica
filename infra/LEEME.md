@@ -443,5 +443,4 @@ en DOCUMENTACION.md, sección 6.6.
 
 ## Pendiente (requisitos opcionales)
 
-- **RF-06** cambiar el plan de un tenant · **RF-05** límite de estudiantes en la app.
 - **RF-15** actualizar desde el portal (hoy, manual: DOCUMENTACION.md 6.2).

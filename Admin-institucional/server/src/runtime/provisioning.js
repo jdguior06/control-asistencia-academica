@@ -16,7 +16,7 @@ class ProvisioningError extends Error {
 const PROVISIONABLE_REGIONS = ['us-east-2', 'us-east-1', 'us-west-2'];
 
 // Trabajos que cambian la infraestructura (los respaldos no cambian su estado).
-const INFRA_ACTIONS = "action IN ('create', 'delete', 'suspend', 'resume')";
+const INFRA_ACTIONS = "action IN ('create', 'delete', 'suspend', 'resume', 'change_plan')";
 const BACKUP_ACTIONS = "action IN ('backup', 'restore')";
 // Instituciones con infraestructura por región, según las cuotas de la cuenta (vCPU y VPC).
 // Cada tenant usa 6 vCPU y 1 VPC. PLATFORM_TENANTS_PER_REGION: un número para todas las
@@ -97,9 +97,15 @@ function readSlug(value) {
   return slug;
 }
 
+// Disco de cada plan (el del servidor de base de datos).
+async function planDisks(client) {
+  const { rows } = await client.query("SELECT plan_id, system_disk_gb FROM platform_plan_instances WHERE role = 'database'");
+  return Object.fromEntries(rows.map((row) => [row.plan_id, row.system_disk_gb]));
+}
+
 async function tenantForRequest(client, requestId, lock = false) {
   const { rows: [tenant] } = await client.query(`
-    SELECT t.id, t.slug, t.region, t.engine, t.network_number, r.plan_id, r.institution_name
+    SELECT t.id, t.slug, t.region, t.engine, t.network_number, t.disk_gb, r.plan_id, r.institution_name
     FROM platform_tenants t JOIN platform_requests r ON r.id = t.request_id
     WHERE t.request_id = $1 ${lock ? 'FOR UPDATE OF t' : ''}
   `, [requestId]);
@@ -126,6 +132,9 @@ function infrastructureState(last) {
     case 'delete': return ok ? 'none' : 'failed';
     case 'suspend': return ok ? 'suspended' : 'ready';
     case 'resume': return ok ? 'ready' : 'suspended';
+    // Cambio de plan: si falla, los servidores siguen encendidos (con el plan anterior o a
+    // medio cambiar) y se puede volver a intentar.
+    case 'change_plan': return 'ready';
     default: return 'none';
   }
 }
@@ -136,6 +145,7 @@ const descriptions = {
   suspend: 'Se inició la suspensión (apagar los servidores)',
   resume: 'Se inició la reanudación (encender los servidores)',
   backup: 'Se inició un respaldo de la base de datos',
+  change_plan: 'Se inició el cambio de plan',
   restore: 'Se inició la restauración de la base de datos',
 };
 
@@ -178,7 +188,8 @@ async function enqueue(client, tenant, action, user, params = {}) {
       action: JOB_ACTIONS[action], result: 'started',
       actor: user?.name ?? 'Operador', actorRole: 'Operador',
       resource: tenant.institution_name ?? tenant.slug, reference: tenant.slug,
-      description: action === 'restore' ? `${descriptions[action]} (${params.backupKey}).`
+      description: action === 'change_plan' ? `${descriptions[action]} (${params.fromPlan} → ${params.toPlan}, ${tenant.engine}).`
+        : action === 'restore' ? `${descriptions[action]} (${params.backupKey}).`
         : action === 'backup' ? `${descriptions[action]}.` : `${descriptions[action]} con ${tenant.engine}.`,
       details: { jobId: job.id, engine: tenant.engine, region: tenant.region, plan: tenant.plan_id, ...(params.backupKey ? { backup: params.backupKey } : {}) },
     });
@@ -262,6 +273,17 @@ async function startJob(pool, requestId, action, confirmation, user, options = {
     }
     if ((action === 'backup' || action === 'restore') && state !== 'ready') {
       throw new ProvisioningError(409, 'Los respaldos necesitan la infraestructura lista y encendida (reanuda la institución si está suspendida).');
+    }
+    if (action === 'change_plan') {
+      if (state !== 'ready') throw new ProvisioningError(409, 'Solo se puede cambiar el plan con la infraestructura lista y encendida.');
+      const toPlan = String(options.planId ?? '');
+      if (!PROVISIONABLE_PLANS.includes(toPlan)) throw new ProvisioningError(422, 'Elige Básico, Estándar o Avanzado.');
+      if (toPlan === tenant.plan_id) throw new ProvisioningError(409, 'La institución ya tiene ese plan.');
+      const disks = await planDisks(client);
+      const current = tenant.disk_gb ?? disks[tenant.plan_id] ?? 20;
+      // Un disco no se puede achicar; con CloudFormation cambiarlo reemplazaría el servidor.
+      const disk = tenant.engine === 'cloudformation' ? current : Math.max(current, disks[toPlan] ?? current);
+      return enqueue(client, tenant, action, user, { fromPlan: tenant.plan_id, toPlan, disk });
     }
     if (action === 'restore') {
       const { rows: [backup] } = await client.query(`
@@ -350,6 +372,6 @@ async function tenantStates(pool) {
 
 module.exports = {
   PROVISIONABLE_PLANS, PROVISIONABLE_REGIONS, ProvisioningError,
-  BACKUP_POLICY, INFRA_ACTIONS, createInstitution, infrastructureState, latestJob, listBackups, regionCapacity,
+  BACKUP_POLICY, INFRA_ACTIONS, createInstitution, planDisks, infrastructureState, latestJob, listBackups, regionCapacity,
   serializeJob, startJob, tenantStates,
 };

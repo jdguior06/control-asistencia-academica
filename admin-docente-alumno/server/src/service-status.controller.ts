@@ -1,6 +1,7 @@
 import { Controller, Get, Header } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DataSource } from 'typeorm';
+import { StudentLimitService } from './shared/application/student-limit.service';
 import { Roles } from './shared/infrastructure/security/decorators';
 
 /**
@@ -15,6 +16,7 @@ export class ServiceStatusController {
   constructor(
     private readonly database: DataSource,
     private readonly config: ConfigService,
+    private readonly studentLimit: StudentLimitService,
   ) {}
 
   @Get()
@@ -27,7 +29,12 @@ export class ServiceStatusController {
     } catch {
       database = 'error';
     }
-    const local = { api: 'ok' as const, database, databaseMs: Date.now() - started };
+    const databaseMs = Date.now() - started;
+    // RF-05: estudiantes de la institución frente al límite de su plan.
+    const students = database === 'ok'
+      ? { count: await this.studentLimit.count().catch(() => null), limit: this.studentLimit.limit() }
+      : { count: null, limit: this.studentLimit.limit() };
+    const local = { api: 'ok' as const, database, databaseMs, students };
 
     const url = this.config.get<string>('PLATFORM_STATUS_URL');
     const slug = this.config.get<string>('PLATFORM_TENANT_SLUG');

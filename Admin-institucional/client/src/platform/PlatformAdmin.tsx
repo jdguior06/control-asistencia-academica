@@ -251,9 +251,10 @@ function Installation({ requestId, tenant, onUpdated, onSessionExpired }: {
   </section>
 }
 
-function RequestDetail({ request, plan, onRegistered, onInvitationUpdated, onReload, onSessionExpired }: {
+function RequestDetail({ request, plan, plans, onRegistered, onInvitationUpdated, onReload, onSessionExpired }: {
   request: TenantRequest
   plan: Plan | undefined
+  plans: Plan[]
   onRegistered: (request: TenantRequest) => void
   onInvitationUpdated: (request: TenantRequest) => void
   onReload: () => void
@@ -310,7 +311,7 @@ function RequestDetail({ request, plan, onRegistered, onInvitationUpdated, onRel
             <div><dt>Entorno</dt><dd>{optionLabel(environments, request.tenant.environment)}</dd></div>
             <div><dt>Motor</dt><dd>{optionLabel(engines, request.tenant.engine)}</dd></div>
           </dl>}
-          {request.tenant && <Provisioning requestId={request.id} tenant={request.tenant} plan={plan} onFinished={onReload} onActiveChange={setProvisioning} onSessionExpired={onSessionExpired} />}
+          {request.tenant && <Provisioning requestId={request.id} tenant={request.tenant} plan={plan} plans={plans} onFinished={onReload} onActiveChange={setProvisioning} onSessionExpired={onSessionExpired} />}
           {request.tenant && request.tenant.infrastructure && request.tenant.infrastructure.state !== 'none' &&
             <Backups requestId={request.id} tenant={request.tenant} onSessionExpired={onSessionExpired} />}
           {request.tenant && !provisioning && !request.tenant.infrastructure?.deleted && <Installation requestId={request.id} tenant={request.tenant} onUpdated={onInvitationUpdated} onSessionExpired={onSessionExpired} />}
@@ -599,7 +600,7 @@ function Console({ user, onLogout }: { user: PlatformUser; onLogout: () => void 
                 </li>)}
               </ul> : <div className="pa-empty"><ClipboardList size={24} /><p>{query || (view === 'requests' && filter !== 'all') || (view === 'tenants' && tenantFiltersActive) ? 'No hay resultados para los filtros.' : view === 'tenants' ? 'Todavía no hay instituciones registradas.' : 'Todavía no hay solicitudes.'}</p></div>}
             </section>
-            {selected ? <RequestDetail key={selected.id} request={selected} plan={selectedPlan} onRegistered={onRegistered} onInvitationUpdated={onInvitationUpdated} onReload={reloadRequests} onSessionExpired={onLogout} /> : <section className="pa-card pa-empty pa-empty-detail"><span className="pa-icon-tile"><Building2 size={24} /></span><h2>Detalles de la institución</h2><p>Selecciona una institución para ver su información.</p></section>}
+            {selected ? <RequestDetail key={selected.id} request={selected} plan={selectedPlan} plans={plans} onRegistered={onRegistered} onInvitationUpdated={onInvitationUpdated} onReload={reloadRequests} onSessionExpired={onLogout} /> : <section className="pa-card pa-empty pa-empty-detail"><span className="pa-icon-tile"><Building2 size={24} /></span><h2>Detalles de la institución</h2><p>Selecciona una institución para ver su información.</p></section>}
           </div>
         </>}
       </main>

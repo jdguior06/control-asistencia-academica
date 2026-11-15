@@ -192,7 +192,7 @@ cuadro en Pulumi y CloudFormation, y en la base del portal).
 | Base de datos | t3.small · 2 GB RAM | c7i-flex.large · 4 GB | m7i-flex.large · 8 GB |
 | Disco de cada servidor (gp3, cifrado) | 20 GB | 30 GB | 40 GB |
 | Disco de la base de datos | 20 GB | 30 GB | 40 GB |
-| Límite de estudiantes (referencia) | 100 | 1 000 | 5 000 |
+| Límite de estudiantes (lo aplica la API) | 100 | 1 000 | 5 000 |
 | Respaldo automático (retención) | Semanal (últimos 4) | Diario (últimos 7) | Diario con retención ampliada (últimos 30) |
 | vCPU en total | 6 | 6 | 6 |
 
@@ -205,8 +205,11 @@ Notas:
   en la lista permitida, con los 4 motores.
 - El **respaldo** se hace solo con la frecuencia del plan y conserva los últimos 4, 7 o 30
   ([6.6](#66-respaldar-y-restaurar)).
-- El **límite de estudiantes** corresponde al requisito opcional RF-05: hoy es un valor de
-  referencia del plan.
+- El **límite de estudiantes** lo aplica la API de cada tenant (`STUDENT_LIMIT`, que pone
+  Ansible según el plan): cuenta los estudiantes activos de los módulos vigentes sin repetir
+  correo y rechaza las altas, reactivaciones e importaciones que lo superen (RF-05). El
+  administrador del tenant ve "X de Y estudiantes" en **Estado del servicio**.
+- El plan de un tenant se puede **cambiar** desde el portal ([6.7](#67-cambiar-de-plan)).
 
 ---
 
@@ -296,6 +299,20 @@ Por línea de comandos (como el worker), en el servidor de la plataforma como `i
 bash scripts/aprovisionar.sh respaldar --slug <slug> --motor <motor> --region <region> --plan <plan> --numero <N>
 bash scripts/aprovisionar.sh restaurar --slug <slug> ... --respaldo tenants/<slug>/<fecha>.dump
 ```
+
+### 6.7 Cambiar de plan
+
+Instituciones → el tenant → **Cambiar plan** (RF-06). Antes de aplicar se muestra qué cambia:
+el tipo y la memoria de cada servidor, el disco, el límite de estudiantes y el respaldo, y el
+efecto esperado:
+
+- Los servidores que cambian de tipo **se apagan y encienden** (unos minutos sin servicio);
+  **no se reemplazan** y los datos se conservan. Las políticas rechazan cualquier reemplazo.
+- El disco **solo crece** (AWS no permite achicarlo). Con **CloudFormation el disco no
+  cambia**, porque cambiarlo reemplazaría el servidor.
+- El trabajo vuelve a ejecutar el mismo flujo de creación con el plan nuevo (escaneo, plan
+  y políticas, motor, Ansible y verificación): el motor solo modifica lo que cambió y Ansible
+  aplica el nuevo límite de estudiantes. Se recomienda respaldar antes.
 
 ---
 
@@ -440,8 +457,8 @@ Los requisitos tachados en el documento del proyecto son opcionales (marcados *o
 | RF-02 Recursos por plan | ✅ | [Catálogo](#5-catálogo-de-planes-y-límites); `locales.tf`; base del portal |
 | RF-03 Elegir plan y ver características | ✅ | Formulario de creación y solicitud pública |
 | RF-04 Modificar planes *(opc.)* | Parcial | Portal → Planes → crear plan |
-| RF-05 Límites del plan *(opc.)* | Pendiente | Límite de estudiantes de referencia |
-| RF-06 Cambiar plan *(opc.)* | Pendiente | — |
+| RF-05 Límites del plan *(opc.)* | ✅ | La API de cada tenant aplica el límite de estudiantes del plan |
+| RF-06 Cambiar plan *(opc.)* | ✅ | Cambiar plan, con la vista previa de los recursos ([6.7](#67-cambiar-de-plan)) |
 | RF-07 Crear con nombre, slug, contacto, entorno y plan | ✅ | Crear institución |
 | RF-08 Elegir el motor | ✅ | Terraform, OpenTofu, Pulumi, CloudFormation |
 | RF-09 Recursos de frontend, backend y base | ✅ | `tenant/<motor>/` |

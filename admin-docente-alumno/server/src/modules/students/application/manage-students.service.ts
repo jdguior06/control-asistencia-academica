@@ -5,6 +5,7 @@ import { pickExtraValues } from '../../../shared/domain/extra-fields';
 import { ActiveModuleService } from '../../academic-modules/application/active-module.service';
 import { validateStudents } from '../../academic-modules/domain/import/import-validator';
 import { ActivityRecorder } from '../../activity/application/activity-recorder.service';
+import { StudentLimitService } from '../../../shared/application/student-limit.service';
 import type { Student } from '../domain/student';
 import { StudentData, StudentRepository } from '../domain/student.repository';
 
@@ -31,11 +32,13 @@ export class ManageStudentsService {
     private readonly activeModule: ActiveModuleService,
     private readonly students: StudentRepository,
     private readonly activity: ActivityRecorder,
+    private readonly studentLimit: StudentLimitService,
   ) {}
 
   async create(teacher: AuthUser, input: StudentInput) {
     const module = await this.activeModule.getActiveOrFail(teacher.id);
     const data = await this.validate(module.id, module.extraFields, input);
+    await this.studentLimit.ensureRoom([data.email]); // RF-05: límite del plan
     const student = await this.students.create(module.id, data);
     await this.activity.record({
       actor: teacher,
@@ -77,6 +80,7 @@ export class ManageStudentsService {
   async setActive(teacher: AuthUser, studentId: number, active: boolean) {
     const { module, student } = await this.findInActiveModule(teacher.id, studentId);
     if (student.active === active) return student;
+    if (active) await this.studentLimit.ensureRoom([student.email]); // RF-05: límite del plan
     const updated = await this.students.setActive(student.id, active);
     await this.activity.record({
       actor: teacher,

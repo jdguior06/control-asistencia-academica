@@ -25,14 +25,14 @@ const requestSelect = `
          r.status, r.created_at, r.updated_at,
          t.id AS tenant_id, t.slug, t.region, t.environment, t.engine,
          t.created_at AS tenant_created_at, t.app_url, t.invitation_status, t.invitation_updated_at,
-         t.network_number, last.action AS last_action, last.status AS last_status,
+         t.network_number, t.disk_gb, last.action AS last_action, last.status AS last_status,
          last.finished_at AS last_finished_at, active.action AS active_action
   FROM platform_requests r
   LEFT JOIN platform_tenants t ON t.request_id = r.id
   LEFT JOIN LATERAL (
     SELECT action, status, finished_at FROM platform_jobs
     WHERE tenant_id = t.id AND status IN ('succeeded', 'failed')
-      AND action IN ('create', 'delete', 'suspend', 'resume') ORDER BY created_at DESC LIMIT 1
+      AND action IN ('create', 'delete', 'suspend', 'resume', 'change_plan') ORDER BY created_at DESC LIMIT 1
   ) last ON true
   LEFT JOIN LATERAL (
     SELECT action FROM platform_jobs
@@ -100,7 +100,8 @@ function serializeRequest(row, includeContact = true) {
     request.tenant = includeContact ? {
       ...invitation, id: row.tenant_id, slug: row.slug, region: row.region,
       environment: row.environment, engine: row.engine, createdAt: row.tenant_created_at,
-      networkNumber: row.network_number ?? undefined, infrastructure: serializeInfrastructure(row),
+      networkNumber: row.network_number ?? undefined, diskGb: row.disk_gb ?? undefined,
+      infrastructure: serializeInfrastructure(row),
     } : invitation;
   }
   return request;
@@ -495,6 +496,14 @@ function createApp(pool, platformOnly) {
     requireRequestId(request.params.id);
     const [list, job] = await Promise.all([listBackups(pool, request.params.id), latestJob(pool, request.params.id, 'backup')]);
     response.json({ ...list, job });
+  });
+
+  // RF-06: cambiar el plan (vuelve a aplicar el motor con los tamaños del plan nuevo).
+  platform.post('/requests/:id/plan', async (request, response) => {
+    requireRequestId(request.params.id);
+    response.status(201).json({
+      job: await startJob(pool, request.params.id, 'change_plan', '', response.locals.user, { planId: request.body?.planId }),
+    });
   });
 
   platform.post('/requests/:id/backup', async (request, response) => {

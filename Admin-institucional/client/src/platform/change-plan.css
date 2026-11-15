@@ -1,0 +1,17 @@
+/* Cambiar el plan de una institución (ChangePlan.tsx). */
+.cp { display: grid; gap: 10px; margin-top: 12px; padding: 12px; border: 1px solid #dccff7; border-radius: 10px; background: #fbf9ff; }
+.cp h4 { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--pa-purple-dark); font-size: 13px; }
+.cp-field { display: grid; gap: 4px; max-width: 280px; font-size: 12px; font-weight: 650; }
+.cp-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.cp-table caption { margin-bottom: 4px; color: var(--pa-muted); font-size: 11px; font-weight: 650; text-align: left; }
+.cp-table th, .cp-table td { padding: 6px 8px; border-bottom: 1px solid var(--pa-line); text-align: left; vertical-align: top; }
+.cp-table thead th { color: var(--pa-muted); font-size: 11px; }
+.cp-table tbody th { font-weight: 650; }
+.cp-changed td:last-child { color: var(--pa-purple-dark); font-weight: 650; }
+.cp-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 5px; background: var(--pa-purple-soft); font-size: 10px; }
+.cp-effects { display: grid; gap: 4px; margin: 0; padding-left: 18px; color: #4b4560; font-size: 12px; line-height: 1.5; }
+@media (max-width: 480px) {
+  .cp-table thead { display: none; }
+  .cp-table tr { display: grid; grid-template-columns: 1fr 1fr; }
+  .cp-table tbody th { grid-column: 1 / -1; border-bottom: 0; padding-bottom: 0; }
+}

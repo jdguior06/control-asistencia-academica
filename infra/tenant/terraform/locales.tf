@@ -45,7 +45,9 @@ locals {
   # Name=free-tier-eligible,Values=true). Los t4g son ARM: no sirven con esta AMI x86_64.
   tipos_permitidos = ["t3.micro", "t3.small", "t8i.micro", "t8i.small", "c7i-flex.large", "m7i-flex.large"]
 
-  tamanos = var.servidores != null ? var.servidores : local.planes[var.plan]
+  tamanos = var.servidores != null ? var.servidores : {
+    for rol, t in local.planes[var.plan] : rol => { tipo = t.tipo, disco = var.disco > 0 ? var.disco : t.disco }
+  }
 
   # La misma IP final en todos los tenants: solo cambia el 10.N.
   ip_final = { backend = 10, frontend = 20, base = 30 }

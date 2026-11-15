@@ -26,3 +26,7 @@ config:
   entorno:
     type: string
     default: production
+  disco:
+    type: integer
+    default: 0
+    description: Disco de cada servidor en GB (0 = el del plan)

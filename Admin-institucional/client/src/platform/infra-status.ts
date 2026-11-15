@@ -16,6 +16,7 @@ export const infraStatusLabels = {
 
 const busyLabels = {
   create: 'Creando…', delete: 'Eliminando…', suspend: 'Suspendiendo…', resume: 'Reanudando…', backup: 'Respaldando…', restore: 'Restaurando…',
+  change_plan: 'Cambiando el plan…',
 } as const
 
 export function infraStatus(infrastructure?: TenantInfrastructure): InfraStatus {

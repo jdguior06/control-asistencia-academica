@@ -21,6 +21,7 @@ const { BACKUP_POLICY } = require('./runtime/provisioning');
 // Acción del trabajo -> argumento de aprovisionar.sh
 const SCRIPT_ACTIONS = {
   create: 'crear', delete: 'borrar', suspend: 'suspender', resume: 'reanudar', backup: 'respaldar', restore: 'restaurar',
+  change_plan: 'crear', // vuelve a aplicar el motor con el plan nuevo (solo cambia lo necesario)
 };
 const DONE = {
   create: 'La infraestructura quedó lista',
@@ -29,6 +30,7 @@ const DONE = {
   resume: 'Los servidores volvieron a encenderse',
   backup: 'Se guardó un respaldo de la base de datos',
   restore: 'La base de datos se restauró desde un respaldo',
+  change_plan: 'El plan cambió',
 };
 
 const INFRA = path.resolve(process.env.PLATFORM_INFRA_DIR ?? path.join(__dirname, '..', '..', '..', 'infra'));
@@ -54,22 +56,35 @@ async function claim(pool) {
   `);
   if (!job) return null;
   const { rows: [tenant] } = await pool.query(`
-    SELECT t.id, t.request_id, t.slug, t.region, t.environment, t.engine, t.network_number, r.plan_id, r.institution_name
+    SELECT t.id, t.request_id, t.slug, t.region, t.environment, t.engine, t.network_number, t.disk_gb, r.plan_id, r.institution_name
     FROM platform_tenants t JOIN platform_requests r ON r.id = t.request_id
     WHERE t.id = $1
   `, [job.tenant_id]);
-  return { ...job, tenant };
+  // Respaldos: la retención no cuenta los respaldos de antes de la infraestructura actual.
+  let since;
+  if (job.action === 'backup') {
+    const { rows: [created] } = await pool.query(`
+      SELECT to_char(finished_at AT TIME ZONE 'UTC', 'YYYYMMDD-HH24MISS') AS since FROM platform_jobs
+      WHERE tenant_id = $1 AND action = 'create' AND status = 'succeeded' ORDER BY created_at DESC LIMIT 1
+    `, [job.tenant_id]);
+    since = created?.since;
+  }
+  return { ...job, tenant, since };
 }
 
 function runScript(pool, job) {
   const { tenant } = job;
+  const plan = job.action === 'change_plan' ? job.params?.toPlan : tenant.plan_id;
   const args = [
     SCRIPT, SCRIPT_ACTIONS[job.action],
     '--slug', tenant.slug, '--motor', tenant.engine, '--region', tenant.region,
-    '--plan', tenant.plan_id, '--entorno', tenant.environment,
+    '--plan', plan, '--entorno', tenant.environment,
     '--numero', String(tenant.network_number ?? 0),
   ];
   if (job.action === 'restore') args.push('--respaldo', String(job.params?.backupKey ?? ''));
+  // El disco que ya tienen los servidores (no se achica; con CloudFormation no cambia).
+  if (job.action === 'change_plan' && job.params?.disk) args.push('--disco', String(job.params.disk));
+  if (job.action === 'backup' && job.since) args.push('--conservar-desde', job.since);
 
   const steps = [];
   const versions = {};
@@ -200,10 +215,21 @@ async function process_(pool, job) {
       await pool.query('UPDATE platform_backups SET deleted_at = now() WHERE object_key = ANY($1) AND deleted_at IS NULL', [result.eliminados]);
     }
   }
+  // Cambio de plan: el plan y el disco nuevos quedan registrados. Al crear, el disco del plan.
+  if (code === 0 && job.action === 'change_plan') {
+    await pool.query('UPDATE platform_requests SET plan_id = $1, updated_at = now() WHERE id = $2', [job.params.toPlan, job.tenant.request_id]);
+    await pool.query('UPDATE platform_tenants SET disk_gb = $1 WHERE id = $2', [job.params.disk, job.tenant.id]);
+  }
+  if (code === 0 && job.action === 'create' && !job.tenant.disk_gb) {
+    await pool.query(`
+      UPDATE platform_tenants t SET disk_gb = i.system_disk_gb FROM platform_plan_instances i
+      WHERE t.id = $1 AND i.plan_id = $2 AND i.role = 'database'
+    `, [job.tenant.id, job.tenant.plan_id]);
+  }
   if (code === 0 && job.action === 'delete') {
     await pool.query(`
       UPDATE platform_tenants
-      SET app_url = NULL, invitation_status = 'pending', invitation_updated_at = NULL, network_number = NULL
+      SET app_url = NULL, invitation_status = 'pending', invitation_updated_at = NULL, network_number = NULL, disk_gb = NULL
       WHERE id = $1
     `, [job.tenant.id]);
   }
@@ -223,7 +249,9 @@ async function process_(pool, job) {
     actor: 'Worker', actorRole: 'Aprovisionamiento',
     resource: job.tenant.institution_name, reference: job.tenant.slug,
     description: code === 0
-      ? `${DONE[job.action]}${['backup', 'restore'].includes(job.action) ? '' : ` (${job.tenant.engine})`}.`
+      ? job.action === 'change_plan'
+        ? `${DONE[job.action]}: ${job.params.fromPlan} → ${job.params.toPlan} (${job.tenant.engine}).`
+        : `${DONE[job.action]}${['backup', 'restore'].includes(job.action) ? '' : ` (${job.tenant.engine})`}.`
       : `Falló: ${error}`,
     details: {
       jobId: job.id, engine: job.tenant.engine, region: job.tenant.region, plan: job.tenant.plan_id, duration,

@@ -60,8 +60,15 @@ const planes: Record<string, Record<Rol, Tamano>> = {
     base: { tipo: "m7i-flex.large", disco: 40 },
   },
 };
+// Disco de cada servidor (0 = el del plan). Al cambiar de plan, el portal manda el tamaño
+// actual si es mayor: un disco no se puede achicar.
+const disco = config.getNumber("disco") ?? 0;
+comprobar(disco === 0 || (disco >= 8 && disco <= 200), "disco debe ser 0 (el del plan) o entre 8 y 200 GB.");
+const delPlan = Object.fromEntries(
+  Object.entries(planes[plan]).map(([rol, t]) => [rol, { tipo: t.tipo, disco: disco > 0 ? disco : t.disco }]),
+) as Record<Rol, Tamano>;
 // Opcional, otro tamaño: pulumi config set --path servidores.backend.tipo t3.small (y así cada uno)
-const tamanos: Record<Rol, Tamano> = config.getObject<Record<Rol, Tamano>>("servidores") ?? planes[plan];
+const tamanos: Record<Rol, Tamano> = config.getObject<Record<Rol, Tamano>>("servidores") ?? delPlan;
 
 // Plan gratuito de AWS: solo estos tipos (ver locales.tf).
 const tiposPermitidos = ["t3.micro", "t3.small", "t8i.micro", "t8i.small", "c7i-flex.large", "m7i-flex.large"];

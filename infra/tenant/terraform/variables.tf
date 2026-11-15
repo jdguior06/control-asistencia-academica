@@ -74,6 +74,17 @@ variable "servidores" {
   default = null
 }
 
+variable "disco" {
+  description = "Disco de cada servidor en GB; 0 = el del plan. Al cambiar de plan, el portal manda el tamaño actual si es mayor (un disco no se puede achicar)."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.disco == 0 || (var.disco >= 8 && var.disco <= 200)
+    error_message = "disco debe ser 0 (el del plan) o entre 8 y 200 GB."
+  }
+}
+
 variable "usar_imagen" {
   description = "Usar la imagen propia de Packer (asistencia-tenant-*) si existe en la región."
   type        = bool

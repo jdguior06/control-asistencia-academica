@@ -51,7 +51,7 @@ export interface PlatformTenantStatus {
 
 export interface ServiceStatus {
   checkedAt: string
-  local: { api: 'ok'; database: 'ok' | 'error'; databaseMs: number }
+  local: { api: 'ok'; database: 'ok' | 'error'; databaseMs: number; students?: { count: number | null; limit: number | null } }
   platform: PlatformTenantStatus | null
   platformError?: string
 }

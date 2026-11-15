@@ -18,6 +18,11 @@ portal_puerto: 4300
 # y 1 VPC). Ohio: 32 vCPU y 10 VPC, con la plataforma (4 vCPU, 2 VPC) y lugar para Packer.
 # Virginia y Oregón: 16 vCPU y 5 VPC.
 tenants_por_region: "us-east-2=4,us-east-1=2,us-west-2=2"
+# Límite de estudiantes por plan (RF-05); lo aplica la API de cada tenant (STUDENT_LIMIT).
+limites_estudiantes:
+  basico: 100
+  estandar: 1000
+  avanzado: 5000
 portal_db_nombre: asistencia_platform
 portal_db_usuario: asistencia_platform
 portal_admin_nombre: Operador

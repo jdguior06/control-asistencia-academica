@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Clock } from '../../../shared/application/clock.port';
+import { StudentLimitService } from '../../../shared/application/student-limit.service';
 import { ExtraField, normalizeExtraFields, pickExtraValues } from '../../../shared/domain/extra-fields';
 import type { AuthUser } from '../../../shared/domain/auth-user';
 import { BusinessRuleError, ValidationError } from '../../../shared/domain/errors';
@@ -25,6 +26,7 @@ export class ActivateModuleUseCase {
     private readonly repository: AcademicModuleRepository,
     private readonly activity: ActivityRecorder,
     private readonly clock: Clock,
+    private readonly studentLimit: StudentLimitService,
   ) {}
 
   async execute(input: ActivateModuleInput) {
@@ -45,6 +47,8 @@ export class ActivateModuleUseCase {
     if (scheduledFor && scheduledFor.getTime() <= now.getTime() + 60_000) {
       throw new BusinessRuleError('La fecha programada debe ser al menos un minuto en el futuro');
     }
+    // RF-05: límite de estudiantes del plan (si se activa ahora, el módulo actual del docente se cierra).
+    await this.studentLimit.ensureRoom(students.map((s) => s.email), scheduledFor ? undefined : input.actor.id);
 
     const { module, previous } = await this.repository.activateNew({
       name: input.name.trim(),

@@ -20,6 +20,7 @@ const actions = {
   resumption: 'Reanudación',
   backup: 'Respaldo',
   restore: 'Restauración',
+  plan_change: 'Cambio de plan',
 } satisfies Record<AuditAction, string>
 
 const results = {

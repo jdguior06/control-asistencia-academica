@@ -23,6 +23,8 @@
       JWT_SECRET={{ jwt_secret }}
       JWT_EXPIRES_IN={{ jwt_expira }}
       APP_TZ={{ zona_horaria }}
+      # Límite de estudiantes del plan (RF-05): la API rechaza las altas que lo superen.
+      STUDENT_LIMIT={{ limites_estudiantes[tenant_plan | default('')] | default('') }}
 
       {% if tenant_invitacion %}
       # El primer administrador lo invita el portal.

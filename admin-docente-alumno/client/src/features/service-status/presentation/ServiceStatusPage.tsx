@@ -1,6 +1,6 @@
 import {
   Activity, BellRing, CheckCircle2, Clock3, Cpu, Database, HardDrive, History, MemoryStick, PauseCircle,
-  RefreshCw, Server, TriangleAlert, XCircle,
+  RefreshCw, Server, TriangleAlert, Users, XCircle,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { getErrorMessage } from '../../../core/http/api-error'
@@ -175,6 +175,8 @@ export function ServiceStatusPage() {
             detail={data.local.database === 'ok' ? `Responde en ${data.local.databaseMs} ms` : 'No responde'} icon={<Database className="size-4" />} />
         </div>
 
+        {data.local.students?.limit && data.local.students.count !== null && <StudentsUsage count={data.local.students.count} limit={data.local.students.limit} />}
+
         {data.platform ? <PlatformDetails platform={data.platform} /> : (
           <Card>
             <p className="flex items-center gap-2 px-5 py-4 text-sm text-muted">
@@ -185,6 +187,27 @@ export function ServiceStatusPage() {
       </div>
     )}
   </>
+}
+
+// RF-05: estudiantes de la institución frente al límite del plan.
+function StudentsUsage({ count, limit }: { count: number; limit: number }) {
+  const percent = Math.min(100, Math.round((count / limit) * 100))
+  const tone = percent >= 100 ? 'bg-alert' : percent >= 80 ? 'bg-warning' : 'bg-brand'
+  return (
+    <Card className="p-5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="flex items-center gap-2 font-semibold"><Users className="size-4 text-brand" aria-hidden="true" /> Estudiantes del plan</p>
+        <p className="text-sm font-bold tabular-nums">{count} de {limit}</p>
+      </div>
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-canvas" aria-hidden="true">
+        <div className={cn('h-full rounded-full', tone)} style={{ width: `${percent}%` }} />
+      </div>
+      <p className="mt-2 text-xs text-muted">
+        {percent >= 100 ? 'Se alcanzó el límite: no se pueden agregar más estudiantes. Pide a la plataforma un plan mayor.'
+          : 'Estudiantes activos en los módulos vigentes (sin repetir correo).'}
+      </p>
+    </Card>
+  )
 }
 
 function Check({ label, ok, detail, icon }: { label: string; ok: boolean; detail: string; icon: ReactNode }) {

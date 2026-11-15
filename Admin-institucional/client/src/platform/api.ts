@@ -28,8 +28,8 @@ export interface InstallationStatus {
 export interface TenantInfrastructure {
   state: 'none' | 'ready' | 'suspended' | 'failed'
   deleted: boolean
-  activeAction?: 'create' | 'delete' | 'suspend' | 'resume' | 'backup' | 'restore'
-  lastAction?: 'create' | 'delete' | 'suspend' | 'resume'
+  activeAction?: 'create' | 'delete' | 'suspend' | 'resume' | 'backup' | 'restore' | 'change_plan'
+  lastAction?: 'create' | 'delete' | 'suspend' | 'resume' | 'change_plan'
   lastStatus?: 'succeeded' | 'failed'
   lastFinishedAt?: string
 }
@@ -42,6 +42,7 @@ export interface TenantConfiguration extends InstallationStatus {
   engine: string
   createdAt: string
   networkNumber?: number
+  diskGb?: number
   infrastructure?: TenantInfrastructure
 }
 
@@ -74,7 +75,7 @@ export interface JobStep {
 // Un trabajo del worker: crear o eliminar la infraestructura de una institución.
 export interface ProvisioningJob {
   id: string
-  action: 'create' | 'delete' | 'suspend' | 'resume' | 'backup' | 'restore'
+  action: 'create' | 'delete' | 'suspend' | 'resume' | 'backup' | 'restore' | 'change_plan'
   status: JobStatus
   steps: JobStep[]
   log: string
@@ -153,7 +154,7 @@ export interface MonitoringSnapshot {
 }
 
 export type AuditAction = 'login' | 'logout' | 'request' | 'registration' | 'plan' | 'invitation' | 'activation'
-  | 'deployment' | 'deletion' | 'suspension' | 'resumption' | 'backup' | 'restore'
+  | 'deployment' | 'deletion' | 'suspension' | 'resumption' | 'backup' | 'restore' | 'plan_change'
 export type AuditResult = 'started' | 'completed' | 'pending' | 'failed'
 
 export interface AuditEvent {

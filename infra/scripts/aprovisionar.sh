@@ -36,12 +36,13 @@ trap 'echo "::error::$PASO::Falló: ${BASH_COMMAND:0:160}"' ERR
 # ------------------------------------------------------------------ entradas
 uso() { echo "Uso: $0 crear|borrar|suspender|reanudar|respaldar|restaurar --slug S --motor M --region R --plan P [--entorno E] --numero N [--respaldo CLAVE]"; exit 2; }
 accion=${1:-}; [[ $# -gt 0 ]] && shift
-slug=""; motor=""; region="us-east-2"; plan="basico"; entorno="production"; numero=0; respaldo=""
+slug=""; motor=""; region="us-east-2"; plan="basico"; entorno="production"; numero=0; respaldo=""; disco=0; conservar_desde=""
 while [[ $# -gt 0 ]]; do
   [[ $# -ge 2 ]] || uso
   case $1 in
     --slug) slug=$2 ;; --motor) motor=$2 ;; --region) region=$2 ;;
     --plan) plan=$2 ;; --entorno) entorno=$2 ;; --numero) numero=$2 ;; --respaldo) respaldo=$2 ;;
+    --disco) disco=$2 ;; --conservar-desde) conservar_desde=$2 ;;
     *) uso ;;
   esac
   shift 2
@@ -69,6 +70,7 @@ paso 1 "Validar datos"
 [[ $plan =~ ^(basico|estandar|avanzado)$ ]] || fallar "plan '$plan' sin infraestructura definida"
 [[ $entorno =~ ^(production|staging)$ ]] || fallar "entorno '$entorno' no válido"
 [[ $numero =~ ^[0-9]+$ && $numero -ge 1 && $numero -le 250 ]] || fallar "número de red '$numero' (1 a 250)"
+[[ $disco =~ ^[0-9]+$ && ( $disco -eq 0 || ( $disco -ge 8 && $disco -le 200 ) ) ]] || fallar "disco '$disco' (0 = el del plan, o 8 a 200 GB)"
 PLATAFORMA="$INFRA/generado/plataforma.json"
 [[ -f $PLATAFORMA ]] || fallar "falta generado/plataforma.json (lo copia plataforma.yml)"
 DOMINIO=$(json "$PLATAFORMA" dominio)
@@ -229,6 +231,11 @@ if [[ $accion == respaldar || $accion == restaurar ]]; then
     rm -f "$archivo"
     case $plan in basico) conservar=4 ;; estandar) conservar=7 ;; *) conservar=30 ;; esac
     todas=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "tenants/$slug/" --query 'Contents[].Key' --output text | tr '\t' '\n' | grep -E '\.dump$' | sort || true)
+    # Los respaldos de antes de la infraestructura actual (antes de eliminarla y volver a
+    # crearla) no cuentan para la retención: solo caducan a los 90 días.
+    if [[ $conservar_desde =~ ^[0-9]{8}-[0-9]{6}$ ]]; then
+      todas=$(while read -r k; do [[ -n $k && $(basename "$k" .dump) > "$conservar_desde" ]] && echo "$k"; done <<<"$todas" || true)
+    fi
     total=$(grep -c . <<<"$todas" || true)
     eliminados=()
     if (( total > conservar )); then
@@ -447,8 +454,8 @@ costo="Infracost: sin clave"
 case $motor in
   terraform|opentofu)
     cd "$DIR"
-    printf '{"slug":"%s","numero":%s,"region":"%s","plan":"%s","entorno":"%s","motor":"%s"}\n' \
-      "$slug" "$numero" "$region" "$plan" "$entorno" "$motor" > "$GEN/entrada.tfvars.json"
+    printf '{"slug":"%s","numero":%s,"region":"%s","plan":"%s","entorno":"%s","motor":"%s","disco":%s}\n' \
+      "$slug" "$numero" "$region" "$plan" "$entorno" "$motor" "$disco" > "$GEN/entrada.tfvars.json"
     titulo "$TF init / plan"
     $TF init -input=false -reconfigure -backend-config="key=tenants/$slug/terraform.tfstate" -no-color >/dev/null
     if ! $TF plan -input=false -no-color -out="$GEN/plan.bin" -var-file="$GEN/entrada.tfvars.json" > "$GEN/plan.txt" 2>&1; then
@@ -474,6 +481,7 @@ case $motor in
     pulumi config set region "$region" --non-interactive
     pulumi config set plan "$plan" --non-interactive
     pulumi config set entorno "$entorno" --non-interactive
+    pulumi config set disco "$disco" --non-interactive
     pulumi preview --json --non-interactive > "$GEN/preview.json"
     python3 -c 'import json,sys,collections; d=json.load(open(sys.argv[1])); print("Vista previa:", dict(collections.Counter(s["op"] for s in d.get("steps",[]))))' "$GEN/preview.json"
     politicas "$GEN/preview.json" pulumi
@@ -496,11 +504,11 @@ case $motor in
       [[ $imagen == ami-* ]] || imagen=""
     fi
     echo "Tipo: $tipo_cambio · imagen: ${imagen:-Amazon Linux 2023 (o la que ya tenía)}"
-    python3 - "$PLATAFORMA" "$GEN/parametros.json" "$slug" "$numero" "$plan" "$tipo_cambio" "$imagen" <<'PY'
+    python3 - "$PLATAFORMA" "$GEN/parametros.json" "$slug" "$numero" "$plan" "$tipo_cambio" "$imagen" "$disco" <<'PY'
 import json, sys
-plat, destino, slug, numero, plan, tipo, imagen = sys.argv[1:]
+plat, destino, slug, numero, plan, tipo, imagen, disco = sys.argv[1:]
 p = json.load(open(plat, encoding="utf-8-sig"))
-valores = {"Slug": slug, "Numero": numero, "Plan": plan, "PlataformaVpc": p["vpc_id"],
+valores = {"Slug": slug, "Numero": numero, "Plan": plan, "Disco": disco, "PlataformaVpc": p["vpc_id"],
            "PlataformaCidr": p["cidr"], "PlataformaRegion": p["region"], "ClavesSsh": ",".join(p["claves_ssh"])}
 parametros = [{"ParameterKey": k, "ParameterValue": v} for k, v in valores.items()]
 if imagen:

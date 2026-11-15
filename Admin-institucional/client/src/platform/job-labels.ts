@@ -17,6 +17,7 @@ export const verbs = {
   resume: { queued: 'En cola para reanudar', running: 'Encendiendo servidores…', succeeded: 'Infraestructura lista', failed: 'La reanudación falló' },
   backup: { queued: 'Respaldo en cola', running: 'Respaldando la base…', succeeded: 'Respaldo guardado', failed: 'El respaldo falló' },
   restore: { queued: 'Restauración en cola', running: 'Restaurando la base…', succeeded: 'Base restaurada', failed: 'La restauración falló' },
+  change_plan: { queued: 'Cambio de plan en cola', running: 'Cambiando el plan…', succeeded: 'Plan cambiado', failed: 'El cambio de plan falló' },
 } satisfies Record<ProvisioningJob['action'], Record<ProvisioningJob['status'], string>>
 
 export function jobLabel(job: ProvisioningJob | null) {

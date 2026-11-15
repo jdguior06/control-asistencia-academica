@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import {
-  ArrowDownToLine, Check, CircleAlert, Clock3, Copy, Download, ExternalLink, LoaderCircle, Maximize2, Pause, Play,
+  ArrowDownToLine, Check, CircleAlert, Clock3, Copy, Download, ExternalLink, Layers3, LoaderCircle, Maximize2, Pause, Play,
   Power, RotateCcw, ServerCog, Terminal, Trash2, X,
 } from 'lucide-react'
 import { ApiError, api, errorMessage, formatDate, webLink, type Plan, type ProvisioningJob, type TenantConfiguration } from './api'
 import { engines, optionLabel, regions } from './tenant-options'
 import { jobLabel, stepIcons } from './job-labels'
+import ChangePlan from './ChangePlan'
 import './provisioning.css'
 
 // Infraestructura de una institución: la crea o la elimina el worker de la plataforma
@@ -162,10 +163,11 @@ function DeletionSummary({ tenant, plan }: { tenant: TenantConfiguration; plan?:
   </div>
 }
 
-export default function Provisioning({ requestId, tenant, plan, onFinished, onActiveChange, onSessionExpired }: {
+export default function Provisioning({ requestId, tenant, plan, plans = [], onFinished, onActiveChange, onSessionExpired }: {
   requestId: string
   tenant: TenantConfiguration
   plan?: Plan
+  plans?: Plan[]
   onFinished: () => void
   onActiveChange: (active: boolean) => void
   onSessionExpired: () => void
@@ -177,6 +179,7 @@ export default function Provisioning({ requestId, tenant, plan, onFinished, onAc
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [confirmation, setConfirmation] = useState('')
   const [logOpen, setLogOpen] = useState(false)
+  const [changingPlan, setChangingPlan] = useState(false)
   const logRef = useRef<HTMLPreElement>(null)
   const followLog = useRef(true)
   const active = job?.status === 'queued' || job?.status === 'running'
@@ -305,6 +308,9 @@ export default function Provisioning({ requestId, tenant, plan, onFinished, onAc
         {(canCreate || canRetryCreate) && <button type="button" className="pa-primary" disabled={busy} onClick={() => void start('provision')}>
           {canRetryCreate ? <><RotateCcw size={16} /> Reintentar creación</> : <><Play size={16} /> Crear infraestructura</>}
         </button>}
+        {canSuspend && plan && !changingPlan && <button type="button" className="pa-secondary" disabled={busy} onClick={() => { setChangingPlan(true); setConfirmDelete(false) }}>
+          <Layers3 size={15} /> Cambiar plan
+        </button>}
         {canSuspend && <button type="button" className="pa-secondary" disabled={busy} onClick={() => void start('suspend')}
           title="Apaga los 3 servidores: no consumen vCPU ni horas de cómputo y los datos se conservan">
           <Pause size={15} /> Suspender
@@ -316,6 +322,16 @@ export default function Provisioning({ requestId, tenant, plan, onFinished, onAc
           <Trash2 size={15} /> {job?.action === 'delete' ? 'Reintentar eliminación' : 'Eliminar infraestructura'}
         </button>}
       </div>
+
+      {changingPlan && canSuspend && plan && <ChangePlan requestId={requestId} tenant={tenant} plans={plans} currentPlanId={plan.id}
+        onCancel={() => setChangingPlan(false)} onSessionExpired={onSessionExpired}
+        onStarted={started => {
+          followLog.current = true
+          lastJob.current = started
+          setJob(started)
+          setChangingPlan(false)
+          onFinished()
+        }} />}
 
       {confirmDelete && <form className="pa-register-form pv-confirm" onSubmit={event => void start('deprovision', event)} autoComplete="off">
         <h4>Antes de eliminar, revisa lo que se borra</h4>
