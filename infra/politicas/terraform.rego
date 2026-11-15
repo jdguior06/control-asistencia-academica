@@ -10,11 +10,17 @@ import rego.v1
 
 import data.comun
 
+# Servidores que se crean o se modifican (al cambiar de plan cambia el tipo).
 instancias contains r if {
 	some r in input.resource_changes
 	r.type == "aws_instance"
-	"create" in r.change.actions
+	some accion in r.change.actions
+	accion in {"create", "update"}
 }
+
+# Archivos locales que escribe el motor (generado/tenants/<slug>.json): se reemplazan cada
+# vez que cambia su contenido, por ejemplo al cambiar de plan. No son recursos de la nube.
+local(r) if startswith(r.type, "local_")
 
 # 1. Solo tipos del plan gratuito de AWS.
 deny contains msg if {
@@ -23,11 +29,12 @@ deny contains msg if {
 	msg := sprintf("%s: el tipo %s no está permitido (plan gratuito de AWS)", [r.address, r.change.after.instance_type])
 }
 
-# 2. Crear un tenant nunca borra ni reemplaza nada.
+# 2. Crear un tenant o cambiar su plan nunca borra ni reemplaza recursos de la nube.
 deny contains msg if {
 	some r in input.resource_changes
 	"delete" in r.change.actions
-	msg := sprintf("%s: el plan borra o reemplaza este recurso; al crear un tenant no se borra nada", [r.address])
+	not local(r)
+	msg := sprintf("%s: el plan borra o reemplaza este recurso; al crear un tenant o cambiar su plan no se borra nada", [r.address])
 }
 
 # 3. Etiquetas que usa Prometheus para encontrar y etiquetar cada servidor.
