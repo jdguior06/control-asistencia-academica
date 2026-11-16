@@ -102,8 +102,8 @@ flowchart TB
 - **Ninguna entrada desde internet a los tenants.** Todo el tráfico web entra por el
   gateway Nginx de la plataforma (`<slug>.<ip>.nip.io`) y viaja por el peering. Los
   servidores de los tenants tienen IP pública solo para salir (paquetes, GitHub).
-- **Tres regiones** (us-east-2, us-east-1, us-west-2), hasta 2 tenants por región por la
-  cuota de 16 vCPU. Un tenant en otra región usa peering entre regiones.
+- **Tres regiones** (us-east-2, us-east-1, us-west-2): hasta 4 tenants en Ohio y 2 en
+  Virginia y en Oregón, según las cuotas (`tenants_por_region`). Un tenant en otra región usa peering entre regiones.
 - **El mismo contrato para los 4 motores:** mismas entradas (slug, número de red,
   región, plan, entorno) y la misma salida (`generado/tenants/<slug>.json`), así Ansible,
   el gateway y el monitoreo no dependen del motor.
@@ -151,7 +151,7 @@ Qué detiene una creación y qué no:
 | Detiene la creación | Solo avisa (queda en el registro) |
 | --- | --- |
 | Gitleaks encuentra un secreto en `infra/` | Hallazgos de TFLint, cfn-lint, Checkov y Trivy |
-| Una regla `deny` de `politicas/`: tipo de servidor fuera del plan, disco sin cifrar, sin IMDSv2, un cambio que **borra o reemplaza** un recurso, falta la etiqueta de monitoreo | Reglas `warn` de `politicas/` |
+| Una regla `deny` de `politicas/`: tipo de servidor fuera de la lista permitida o un cambio que **borra o reemplaza** un recurso (con CloudFormation, también un plan sin infraestructura definida) | Reglas `warn` de `politicas/`: etiquetas de monitoreo, disco sin cifrar, sin IMDSv2, puertos abiertos a internet |
 | El motor falla (cuota, permisos, red) | Costo estimado de Infracost |
 
 **Reintentar sin duplicar (RF-12):** si un trabajo falla, el botón **Reintentar
@@ -423,7 +423,7 @@ Medidas adicionales:
 
 - **Gitleaks** revisa `infra/` en cada creación y la detiene si encuentra un secreto.
 - Discos **cifrados** e **IMDSv2 obligatorio** en todos los servidores (y las políticas
-  rechazan lo contrario).
+  avisan si falta).
 - Las tareas de Ansible con contraseñas usan `no_log` / `diff: false`; los errores que
   muestra el portal son los resúmenes de los pasos, sin variables ni contraseñas.
 - El administrador del tenant crea su propia contraseña con un enlace de un solo uso
@@ -486,8 +486,8 @@ recientes.
 
 - Los planes usan tipos de la capa gratuita; cada tenant ocupa 6 vCPU. **Suspender** deja
   de consumir cómputo; solo quedan los discos.
-- Cuotas por región: 16 vCPU y 5 VPC. El portal admite 2 tenants por región
-  (`PLATFORM_TENANTS_PER_REGION`).
+- Cuotas por región: Ohio 32 vCPU y 10 VPC; Virginia y Oregón 16 vCPU y 5 VPC. El portal
+  admite 4, 2 y 2 tenants (`PLATFORM_TENANTS_PER_REGION`).
 - Infracost estima el costo mensual en el paso 3 (con clave gratuita en el vault).
 - **Limpieza al terminar las pruebas:** eliminar cada tenant desde el portal y después la
   plataforma con `terraform destroy` en `infra/plataforma` (ver [LEEME.md](LEEME.md#6-borrar)).
@@ -541,19 +541,9 @@ Los requisitos tachados en el documento del proyecto son opcionales (marcados *o
 
 ## 14. Guion de la demostración
 
-Crear un tenant tarda entre 10 y 20 minutos: conviene tener **tenants ya creados** (por ejemplo
-2-3 con planes y motores distintos) y crear **uno solo en vivo** al principio.
-
-| Min | Qué mostrar | Criterio de aceptación |
-| --- | --- | --- |
-| 0-3 | Arquitectura ([sección 2](#2-arquitectura)) y función de cada herramienta | Explicar el diseño |
-| 3-6 | Crear un tenant en vivo (plan distinto, otro motor): pasos, escáneres, registro en grande | Crear tenants con distintos planes |
-| 6-9 | Un tenant ya creado: abrir su URL, activar el administrador, crear un docente | Desplegar frontend, backend y base |
-| 9-12 | Filtros de Instituciones, versiones del despliegue y Auditoría | Historial y versiones |
-| 12-15 | Suspender un tenant (Monitoreo lo muestra suspendido), reanudar y comprobar que sus datos siguen | Suspender y reanudar conservando datos |
-| 15-19 | Grafana (vista general y detalle) y la alerta de ejemplo hasta verla en el portal | Salud en Grafana y alerta de ejemplo |
-| 19-22 | Pruebas de aislamiento 1, 2 y 6 ([sección 10](#10-aislamiento-entre-tenants)) | Un tenant no consulta datos de otro |
-| 22-24 | Eliminar un tenant: el resumen de recursos y la confirmación | Eliminar con confirmación |
-| 24-25 | Volver al tenant creado en vivo: ya terminó | — |
+La defensa dura 15 minutos y la presentan 6 personas (2 min 30 s cada una). El guion
+completo, con el recorrido por el repositorio y los comandos de cada parte, está en
+`entregables/Guion-de-la-defensa.docx`. Los entregables en Word (documentación técnica,
+manual de operaciones y evidencia de pruebas) y los diagramas están en `entregables/`.
 
 Al terminar la presentación: [limpieza](#12-costos-y-limpieza).

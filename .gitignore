@@ -5,3 +5,5 @@
 .env
 .env.*
 !.env.example
+# Videos de la defensa (pesan demasiado para GitHub: maximo 100 MB por archivo)
+entregables/videos/
